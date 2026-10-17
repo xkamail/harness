@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness SSE</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --muted:#777; --line:#e3e3e3; --user:#eef3ff; --warn:#fff6e0; --bad:#c62828; --ok:#2e7d32; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#151515; --fg:#eee; --muted:#999; --line:#333; --user:#1e2a44; --warn:#3a2f12; --bad:#ef5350; --ok:#66bb6a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:720px; margin:0 auto; padding:16px 16px 96px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+  #status { font-size:13px; color:var(--muted); }
+  .msg { padding:8px 12px; border-radius:10px; margin:8px 0; white-space:pre-wrap; }
+  .user { background:var(--user); margin-left:20%; }
+  .agent { border:1px solid var(--line); }
+  .badge { font-size:12px; color:var(--muted); margin-left:6px; }
+  .tool { font-size:13px; color:var(--muted); margin:4px 0; }
+  .tool::before { content:"⏳ "; }
+  .tool.ok::before { content:"✓ "; color:var(--ok); }
+  .tool.err::before { content:"✗ "; color:var(--bad); }
+  .tool.held::before { content:"⏸ "; }
+  .confirm { background:var(--warn); border-radius:10px; padding:10px 12px; margin:8px 0; }
+  .confirm button { margin:6px 6px 0 0; }
+  .error { color:var(--bad); }
+  form { position:fixed; bottom:0; left:0; right:0; background:var(--bg); border-top:1px solid var(--line); padding:12px 16px; }
+  form div { max-width:720px; margin:0 auto; display:flex; gap:8px; }
+  input { flex:1; padding:8px; font:inherit; }
+</style>
+</head>
+<body>
+<main>
+  <header><strong>Harness SSE</strong><span id="status">connecting…</span></header>
+  <div id="log"></div>
+</main>
+<form id="form"><div><input id="text" autocomplete="off" placeholder="Ask, or steer a running run"><button id="send">Send</button></div></form>
+<script>
+const log = document.getElementById("log");
+const statusEl = document.getElementById("status");
+const sendBtn = document.getElementById("send");
+let runId = "";          // the running run; ephemeral events of any other are stale
+let status = "idle";
+
+const el = (cls, text) => { const d = document.createElement("div"); d.className = cls; if (text) d.textContent = text; return d; };
+const add = (node) => { log.append(node); node.scrollIntoView({ block: "end" }); return node; };
+
+// assistant bubble keyed by MessageID: deltas append, step.reset clears, agent.message replaces
+const bubble = (mid) => document.querySelector(`[data-mid="${mid}"]`) || add(Object.assign(el("msg agent"), { dataset: { mid } }));
+
+// tool line keyed by ToolCallID: tool_start (live) or tool_call (replay) creates it
+const toolLine = (id, label) => {
+  let t = document.querySelector(`[data-call="${id}"]`);
+  if (!t) { t = add(el("tool", label)); t.dataset.call = id; }
+  return t;
+};
+
+function onEvent(ev) {
+  const p = ev.payload || {};
+  if (!ev.seq && ev.runId && ev.runId !== runId) return;
+  switch (ev.type) {
+    case "user.message":
+      if (p.queuedSeq) { // a steering message the run has now read
+        document.querySelector(`[data-seq="${p.queuedSeq}"] .badge`)?.remove();
+        break;
+      }
+      add(el("msg user", p.text));
+      break;
+    case "user.queued": {
+      const m = add(el("msg user", p.text));
+      m.dataset.seq = ev.seq;
+      m.append(el("badge", "queued"));
+      break;
+    }
+    case "agent.delta": bubble(ev.messageId).textContent += p.text; break;
+    case "step.reset": bubble(ev.messageId).textContent = ""; break;
+    case "agent.message": bubble(ev.messageId).textContent = p.text; break;
+    case "agent.tool_start": toolLine(ev.toolCallId, p.display?.label || p.name); break;
+    case "agent.tool_call": toolLine(ev.toolCallId, p.display?.label || p.name); break;
+    case "agent.tool_done": {
+      const t = toolLine(ev.toolCallId, "");
+      t.classList.add(p.held ? "held" : p.ok ? "ok" : "err");
+      if (!p.held) t.append(el("badge", `${p.durationMs} ms`));
+      break;
+    }
+    case "agent.tool_result": toolLine(ev.toolCallId, "").classList.add("ok"); break;
+    case "agent.confirm": confirmCard(ev.toolCallId, p); break;
+    case "user.decision": {
+      const card = document.querySelector(`[data-approval="${ev.toolCallId}"]`);
+      if (card) {
+        card.querySelectorAll("button").forEach(b => b.remove());
+        card.append(el("badge", p.decision.replace("_", " ")));
+      }
+      break;
+    }
+    case "agent.error": add(el("msg error", p.message)); break;
+    case "session.status":
+      status = p.status;
+      if (status === "running") runId = ev.runId;
+      statusEl.textContent = status + (p.usage ? ` · in ${p.usage.inputTokens} out ${p.usage.outputTokens}` : "");
+      sendBtn.textContent = status === "running" ? "Steer" : "Send";
+      break;
+    case "stream.ready": statusEl.textContent = status; break;
+  }
+}
+
+function confirmCard(id, p) {
+  const card = add(el("confirm"));
+  card.dataset.approval = id;
+  card.append(el("", `${p.display?.summary || p.display?.label || p.call.name} (${p.tier})`));
+  const decide = (decision) => post("/api/decision", { approvalId: id, decision });
+  const btn = (text, decision) => { const b = document.createElement("button"); b.textContent = text; b.onclick = () => decide(decision); card.append(b); };
+  btn("Approve", "approve");
+  if (p.grantGroup?.length) btn(`Approve all (${p.grantGroup.join(", ")})`, "approve_all");
+  btn("Reject", "reject");
+}
+
+async function post(url, body) {
+  const r = await fetch(url, { method: "POST", body: JSON.stringify(body) });
+  if (!r.ok) add(el("msg error", await r.text()));
+}
+
+document.getElementById("form").onsubmit = (e) => {
+  e.preventDefault();
+  const input = document.getElementById("text");
+  if (!input.value.trim()) return;
+  post("/api/messages", { text: input.value });
+  input.value = "";
+};
+
+// EventSource reconnects by itself and sends Last-Event-ID, so the server
+// resumes after the last persisted event this page saw.
+const es = new EventSource("/api/events");
+es.onmessage = (m) => onEvent(JSON.parse(m.data));
+es.onerror = () => { statusEl.textContent = "reconnecting…"; };
+</script>
+</body>
+</html>
