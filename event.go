@@ -1,7 +1,6 @@
 package harness
 
 import (
-	"context"
 	"encoding/json"
 	"strconv"
 	"time"
@@ -26,18 +25,19 @@ const (
 	EventMemory      EventType = "agent.memory"
 	EventError       EventType = "agent.error"
 	EventStatus      EventType = "session.status"
-	EventHandoff     EventType = "session.handoff"
-	EventSummary     EventType = "session.summary" // compaction
-	EventDelta       EventType = "agent.delta"     // ephemeral
-	EventReasoning   EventType = "agent.reasoning" // ephemeral
-	EventStepReset   EventType = "step.reset"      // ephemeral: drop MessageID's streamed text
-	EventStreamReady EventType = "stream.ready"    // ephemeral, Follow only
+	EventSummary     EventType = "session.summary"  // compaction
+	EventDelta       EventType = "agent.delta"      // ephemeral
+	EventReasoning   EventType = "agent.reasoning"  // ephemeral
+	EventStepReset   EventType = "step.reset"       // ephemeral: drop MessageID's streamed text
+	EventToolStart   EventType = "agent.tool_start" // ephemeral: a call is about to run
+	EventToolDone    EventType = "agent.tool_done"  // ephemeral: a call finished
+	EventStreamReady EventType = "stream.ready"     // ephemeral, pgharness.Follow only
 )
 
 // Ephemeral reports whether events of t are never persisted.
 func (t EventType) Ephemeral() bool {
 	switch t {
-	case EventDelta, EventReasoning, EventStepReset, EventStreamReady:
+	case EventDelta, EventReasoning, EventStepReset, EventToolStart, EventToolDone, EventStreamReady:
 		return true
 	}
 	return false
@@ -58,13 +58,14 @@ type Event struct {
 	// MessageID is set on agent.delta, agent.reasoning, step.reset and
 	// agent.message.
 	MessageID string `json:"messageId,omitempty"`
-	// ToolCallID is set on agent.tool_call, agent.tool_result, agent.block,
-	// agent.confirm and user.decision.
+	// ToolCallID is set on agent.tool_call, agent.tool_result,
+	// agent.tool_start, agent.tool_done, agent.block, agent.confirm and
+	// user.decision.
 	ToolCallID string          `json:"toolCallId,omitempty"`
 	Payload    json.RawMessage `json:"payload"`
 	CreatedAt  time.Time       `json:"createdAt"`
-	// Lagged is set by a Bus that dropped events before this one; Follow
-	// catches up from the Store when it sees it.
+	// Lagged is set by a bus that dropped events before this one; the
+	// follower (pgharness.Follow) catches up from the log when it sees it.
 	Lagged bool `json:"-"`
 }
 
@@ -118,10 +119,11 @@ const (
 // refused with ErrStaleApproval, so a late click on an old button in a shared
 // conversation approves nothing.
 type DecisionPayload struct {
-	ApprovalID string    `json:"approvalId"`
-	Decision   Decision  `json:"decision"`
-	By         Principal `json:"by"`
-	Note       string    `json:"note,omitempty"`
+	ApprovalID string   `json:"approvalId"`
+	Decision   Decision `json:"decision"`
+	// ByID is who decided, for the record.
+	ByID string `json:"byId,omitempty"`
+	Note string `json:"note,omitempty"`
 }
 
 // StatusPayload is session.status. When a run ends it also carries why and
@@ -141,45 +143,28 @@ type ErrorPayload struct {
 	Code    string `json:"code,omitempty"`
 }
 
-// Store is a conversation's event log, the source of truth. Projects own the
-// table; harnesstest.Store checks an implementation.
-type Store interface {
-	// Append persists evs in order, assigns each the next Seq and returns
-	// them. Ephemeral events are rejected.
-	Append(ctx context.Context, conversationID string, evs ...Event) ([]Event, error)
-	// After returns up to limit events with Seq > seq, in Seq order.
-	After(ctx context.Context, conversationID string, seq int64, limit int) ([]Event, error)
+// Status is a conversation's run state, carried by session.status.
+type Status string
+
+// Statuses.
+const (
+	StatusIdle          Status = "idle"
+	StatusRunning       Status = "running"
+	StatusAwaitingInput Status = "awaiting_input"
+	StatusError         Status = "error"
+)
+
+// ToolStartPayload is agent.tool_start: a call the model just asked for,
+// before it runs or is held.
+type ToolStartPayload struct {
+	Name    string      `json:"name"`
+	Display ToolDisplay `json:"display"`
 }
 
-// Bus fans events out to every instance. Delivery may be lossy and out of
-// order; Follow repairs both from the Store. harnesstest.Bus checks an
-// implementation.
-type Bus interface {
-	Publish(ctx context.Context, conversationID string, ev Event) error
-	// Subscribe must be receiving when it returns, so a Publish right after
-	// it is delivered. stop closes the channel and is safe to call twice.
-	Subscribe(ctx context.Context, conversationID string) (events <-chan Event, stop func(), err error)
-}
-
-// FollowConfig tunes Follow; zero values use the defaults.
-type FollowConfig struct {
-	// PageSize is the Store page; zero means 200.
-	PageSize int
-	// Heal re-reads the Store this often to repair a missed publish; zero
-	// means 15s. Transports send their keep-alive on the same tick.
-	Heal time.Duration
-	// OnTick is called on every Heal tick, after the catch-up, such as to
-	// send an SSE ": ping".
-	OnTick func() error
-}
-
-// Follow yields every persisted event after afterSeq exactly once and in Seq
-// order, then every live event, until ctx ends or yield fails. It subscribes
-// before reading the Store, treats a persisted live event only as a signal
-// to catch up, passes ephemeral events through as they come, and yields
-// EventStreamReady once the backlog is sent. Every transport (SSE,
-// WebSocket, a chat bot) builds on it rather than on Bus directly.
-func Follow(ctx context.Context, st Store, bus Bus, conversationID string, afterSeq int64, cfg FollowConfig, yield func(Event) error) error {
-	// TODO: port catchUp from mccloud api/ai/stream.go.
-	return ErrNotImplemented
+// ToolDonePayload is agent.tool_done: one call's outcome, as soon as it
+// finishes.
+type ToolDonePayload struct {
+	OK         bool  `json:"ok"`
+	Held       bool  `json:"held,omitempty"`
+	DurationMs int64 `json:"durationMs"`
 }

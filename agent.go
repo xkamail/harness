@@ -13,9 +13,6 @@ const (
 	ToolAskUser   = "ask_user"
 	ToolPlan      = "plan"
 	ToolLoadSkill = "load_skill"
-	ToolRemember  = "remember"
-	ToolForget    = "forget"
-	ToolRecall    = "recall"
 )
 
 // Agent is one feature's assistant: prompt, tools and policy. Write it as a
@@ -38,9 +35,6 @@ type Agent struct {
 	Tools []Tool
 	// Skills adds load_skill when non-empty.
 	Skills []Skill
-	// Memory adds remember, forget and recall, and injects pinned and
-	// contextual memories into every run. Nil means no memory.
-	Memory MemoryStore
 
 	// ProposalSchema adds the propose tool. Empty means nothing to propose.
 	ProposalSchema json.RawMessage
@@ -48,22 +42,6 @@ type Agent struct {
 	// completed arguments. Its error goes to the model verbatim.
 	PrepareProposal func(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 
-	// ContextKeys are the Values keys every conversation of this agent must
-	// carry, such as "serverId"; starting one without them fails with
-	// ErrContext.
-	ContextKeys []string
-	Policy      Policy
-	// Approver reports whether p may confirm gated calls in c. Nil means
-	// only the conversation's owner.
-	Approver func(ctx context.Context, c Conversation, p Principal) bool
-
-	// Models are the model ids this agent may run on, each one passed by its
-	// evals; the first is the default.
-	Models      []string
-	ModelPolicy ModelPolicy
-	// Route picks the model for a run from Models; nil means Models[0].
-	// Under ModelPinned it is consulted only when the conversation starts.
-	Route func(ctx context.Context, c Conversation, last Message) string
 	// ReasoningEffort is sent on every model call; empty keeps the default.
 	ReasoningEffort string
 
@@ -85,10 +63,10 @@ type compiled struct {
 }
 
 // Compile validates a and compiles every schema. It fails on an empty name,
-// a duplicate or reserved tool name, a tool without a Handler, a bad schema,
-// or a Route without Models.
+// a duplicate or reserved tool name, a tool without a Handler, or a bad
+// schema.
 func Compile(a Agent) (*Agent, error) {
-	// TODO: validate, compile schemas, add interaction and memory tools.
+	// TODO: validate, compile schemas, add interaction tools.
 	a.c = &compiled{}
 	return &a, nil
 }
@@ -134,27 +112,4 @@ func (a *Agent) Display(call ToolCall) ToolDisplay {
 func (a *Agent) GrantGroup(name string) []string {
 	// TODO
 	return nil
-}
-
-// PickModel returns the model for the next run of c: c.Model under
-// ModelPinned once set, else Route, else Models[0].
-func (a *Agent) PickModel(ctx context.Context, c Conversation, last Message) string {
-	if a.ModelPolicy == ModelPinned && c.Model != "" {
-		return c.Model
-	}
-	if a.Route != nil {
-		return a.Route(ctx, c, last)
-	}
-	if len(a.Models) > 0 {
-		return a.Models[0]
-	}
-	return ""
-}
-
-// CanApprove reports whether p may confirm gated calls in c.
-func (a *Agent) CanApprove(ctx context.Context, c Conversation, p Principal) bool {
-	if a.Approver != nil {
-		return a.Approver(ctx, c, p)
-	}
-	return p.ID != "" && p.ID == c.OwnerID
 }

@@ -25,9 +25,6 @@ type Message struct {
 	Parts      []Part     `json:"parts,omitempty"`
 	ToolCalls  []ToolCall `json:"toolCalls,omitempty"`
 	ToolCallID string     `json:"toolCallId,omitempty"`
-	// Author is who wrote a user message in a shared conversation; empty
-	// means the conversation's owner.
-	Author *Principal `json:"author,omitempty"`
 }
 
 // PartType is the kind of a message Part.
@@ -53,9 +50,8 @@ type Part struct {
 	Data         []byte   `json:"data,omitempty"`         // PartImage, PartFile
 }
 
-// ToolCall is a model request to invoke a tool. ID is the harness's own id;
-// adapters translate it to and from the provider's format, so history stays
-// valid when the model changes.
+// ToolCall is a model request to invoke a tool. ID is the id the provider
+// gave the call; adapters pass it through unchanged.
 type ToolCall struct {
 	ID        string          `json:"id"`
 	Name      string          `json:"name"`

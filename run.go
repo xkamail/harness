@@ -20,7 +20,7 @@ type RunConfig struct {
 	// applies it to that call, the last one in History, before the first
 	// model call. Approve and approve_all run it once whatever its tier;
 	// reject returns it to the model as rejected, with the Note. The caller
-	// checks CanApprove and ErrStaleApproval first, and on approve_all adds
+	// checks who may approve and ErrStaleApproval first, and on approve_all adds
 	// the call's GrantGroup to Grants.Tools.
 	Decision *DecisionPayload
 	// Tools runs each turn's tool calls; nil runs them concurrently
@@ -36,6 +36,13 @@ type RunConfig struct {
 	// OnReset hears that messageID's streamed text is void because the
 	// call is being retried; emit it as step.reset.
 	OnReset func(messageID string)
+	// OnToolStart hears each call as soon as the model asks for it, before
+	// it runs or is held; emit it as agent.tool_start. OnToolDone hears each
+	// call's outcome as soon as it finishes; emit it as agent.tool_done.
+	// Run calls both whatever the ToolRunner, and again for turns a durable
+	// run replays, so clients dedupe by ToolCallID.
+	OnToolStart func(messageID string, call ToolCall, d ToolDisplay)
+	OnToolDone  func(call ToolCall, out ToolOutcome)
 	// Budget bounds this run's spend.
 	Budget Budget
 }
@@ -62,6 +69,16 @@ type Grants struct {
 	// Tools may be called any number of times with any arguments. A
 	// TierDestructive tool is never granted this way.
 	Tools []string
+}
+
+// ToolOutcome is how one call ended.
+type ToolOutcome struct {
+	// OK is false when the model gets a tool error back (bad arguments,
+	// handler error, timeout).
+	OK bool
+	// Held is true for a gated call paused for confirmation; it did not run.
+	Held     bool
+	Duration time.Duration
 }
 
 // StopReason is why a run ended without an error.

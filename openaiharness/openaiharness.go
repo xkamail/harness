@@ -30,21 +30,14 @@ type Dialect struct {
 	// NoReasoningEffort drops Request.ReasoningEffort for endpoints that
 	// reject it.
 	NoReasoningEffort bool
-	// NoStreamUsage is for endpoints that ignore stream_options.include_usage;
-	// usage is then read from a final non-stream call or left zero.
-	NoStreamUsage bool
-	// ToolCallIDPattern rewrites harness ids for endpoints that validate the
-	// format; empty passes them through.
-	ToolCallIDPattern string
 }
 
 // Dialects of known endpoints. Images go as image_url data URIs and PDFs as
 // file content parts (base64 file_data) on every dialect.
 var (
-	OpenAI     = Dialect{}
-	DeepSeek   = Dialect{ReasoningField: "reasoning_content", NoReasoningEffort: true}
-	Ollama     = Dialect{NoReasoningEffort: true}
-	OpenRouter = Dialect{}
+	OpenAI   = Dialect{}
+	DeepSeek = Dialect{ReasoningField: "reasoning_content", NoReasoningEffort: true}
+	Ollama   = Dialect{NoReasoningEffort: true}
 )
 
 // Option configures a Client.
@@ -78,9 +71,3 @@ func (c *Client) Message(ctx context.Context, req harness.Request) (*harness.Res
 
 func (c *Client) Provider() string { return c.provider }
 func (c *Client) Model() string    { return c.model }
-
-// Models resolves model ids to clients, for Agent.Models and Route.
-type Models map[string]harness.Model
-
-// Get returns the client for id, or nil.
-func (m Models) Get(id string) harness.Model { return m[id] }

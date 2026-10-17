@@ -1,8 +1,4 @@
-// Package harnesstest has a scripted model for tests and conformance suites
-// every Store, Bus and MemoryStore implementation must pass:
-//
-//	func TestStore(t *testing.T) { harnesstest.Store(t, func(t *testing.T) harness.Store { return newPGStore(t) }) }
-//	func TestBus(t *testing.T)   { harnesstest.Bus(t, func(t *testing.T) harness.Bus { return newRedisBus(t) }) }
+// Package harnesstest has a scripted model for tests.
 package harnesstest
 
 import (
@@ -10,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
-	"testing"
 
 	"github.com/xkamail/harness"
 )
@@ -64,36 +59,3 @@ func (f *FakeModel) Message(_ context.Context, req harness.Request) (*harness.Re
 
 func (f *FakeModel) Provider() string { return "fake" }
 func (f *FakeModel) Model() string    { return "fake" }
-
-// Store checks a Store: Seq is monotonic per conversation, After pages in
-// order, conversations are isolated, ephemeral events are rejected.
-func Store(t *testing.T, newStore func(t *testing.T) harness.Store) {
-	t.Helper()
-	// TODO
-	t.Fatal("harnesstest.Store: not implemented")
-}
-
-// Bus checks a Bus: a Publish right after Subscribe returns is delivered,
-// conversations are isolated, stop closes the channel and may be called
-// twice, no goroutine outlives stop.
-func Bus(t *testing.T, newBus func(t *testing.T) harness.Bus) {
-	t.Helper()
-	// TODO
-	t.Fatal("harnesstest.Bus: not implemented")
-}
-
-// Follow checks harness.Follow against a lossy, reordering Bus: every
-// persisted event is yielded once and in order.
-func Follow(t *testing.T, newStore func(t *testing.T) harness.Store) {
-	t.Helper()
-	// TODO
-	t.Fatal("harnesstest.Follow: not implemented")
-}
-
-// MemoryStore checks a MemoryStore: results never cross owners or leave the
-// query's Context (containment), Save with an id updates, Forget deletes.
-func MemoryStore(t *testing.T, newStore func(t *testing.T) harness.MemoryStore) {
-	t.Helper()
-	// TODO
-	t.Fatal("harnesstest.MemoryStore: not implemented")
-}

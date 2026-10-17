@@ -113,19 +113,3 @@ func FailOrphanedRuns(ctx context.Context, dc dbos.DBOSContext, s OrphanSweeper,
 	// TODO: port FailOrphanedRuns from mccloud api/ai/run.go.
 	return harness.ErrNotImplemented
 }
-
-// GCConfig is how long finished workflows are kept.
-type GCConfig struct {
-	// Keep is the retention of finished workflows; zero means 14 days.
-	Keep time.Duration
-	// Batch is rows deleted per pass; zero means 1000.
-	Batch int
-}
-
-// CollectGarbage deletes finished workflows older than cfg.Keep from the
-// DBOS system database. Run it on a schedule.
-func CollectGarbage(ctx context.Context, dc dbos.DBOSContext, cfg GCConfig) error {
-	// TODO: use DBOS's own retention API if v0.16+ has one; else delete in
-	// batches from the system schema.
-	return harness.ErrNotImplemented
-}
