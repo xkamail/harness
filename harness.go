@@ -18,6 +18,7 @@
 //   - message.go, model.go: neutral messages and the model seam
 //   - tools.go: tools, tiers and how calls are shown
 //   - agent.go: the Agent, Compile and Run
+//   - dispatch.go: one turn's tool calls, gated calls held or granted
 //   - run.go: RunConfig, RunResult, grants, callbacks and runner seams
 //   - values.go: Values, the context tools read from ctx
 //   - event.go: event types and the payloads the harness owns

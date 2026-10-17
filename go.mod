@@ -6,10 +6,13 @@ require (
 	github.com/acoshift/pgsql v0.16.0
 	github.com/dbos-inc/dbos-transact-golang v0.16.0
 	github.com/jackc/pgx/v5 v5.9.1
+	github.com/openai/openai-go/v3 v3.77.0
 	github.com/rs/xid v1.6.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 )
 
 require (
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
@@ -22,6 +25,10 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/robfig/cron/v3 v3.0.1 // indirect
+	github.com/tidwall/gjson v1.19.0 // indirect
+	github.com/tidwall/match v1.1.1 // indirect
+	github.com/tidwall/pretty v1.2.1 // indirect
+	github.com/tidwall/sjson v1.2.5 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect

@@ -40,7 +40,8 @@ type RunConfig struct {
 	// it runs or is held; emit it as agent.tool_start. OnToolDone hears each
 	// call's outcome as soon as it finishes; emit it as agent.tool_done.
 	// Run calls both whatever the ToolRunner, and again for turns a durable
-	// run replays, so clients dedupe by ToolCallID.
+	// run replays, so clients dedupe by ToolCallID. OnToolDone may be called
+	// concurrently.
 	OnToolStart func(messageID string, call ToolCall, d ToolDisplay)
 	OnToolDone  func(call ToolCall, out ToolOutcome)
 	// Budget bounds this run's spend.
@@ -125,11 +126,4 @@ type Block struct {
 	ToolCallID string          `json:"toolCallId"`
 	Tool       string          `json:"tool"`
 	Data       json.RawMessage `json:"data"`
-}
-
-// CallKey identifies a call by name and key-order-independent arguments; it
-// is how an approved plan's steps match calls.
-func CallKey(call ToolCall) string {
-	// TODO: name + sha256 of canonical JSON, as mccloud cacheKey.
-	return call.Name + ":" + string(call.Arguments)
 }

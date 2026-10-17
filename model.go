@@ -24,6 +24,8 @@ type Request struct {
 	// NoToolCalls keeps Tools in the request but forbids calling them, so the
 	// model must answer in text (tool_choice "none").
 	NoToolCalls bool
+	// MaxOutputTokens caps the reply; zero keeps the provider's limit.
+	MaxOutputTokens int64
 	// OnDelta hears each chunk of reply text as it streams; may be nil.
 	OnDelta func(text string)
 	// OnReasoning hears each chunk of reasoning text, for providers that

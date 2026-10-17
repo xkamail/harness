@@ -21,7 +21,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -351,11 +350,7 @@ func (c *convo) run(cfg harness.RunConfig) {
 	case err != nil:
 		// the raw error only goes to the log
 		log.Printf("run %s: %v", runID, err)
-		msg := "Something went wrong. Try again."
-		if errors.Is(err, harness.ErrNotImplemented) {
-			msg = "harness.Run is not implemented yet."
-		}
-		c.emitLocked(newEvent(harness.EventError, runID, harness.ErrorPayload{Message: msg}))
+		c.emitLocked(newEvent(harness.EventError, runID, harness.ErrorPayload{Message: "Something went wrong. Try again."}))
 		c.status = harness.StatusError
 	case res.Confirm != nil:
 		call := *res.Confirm

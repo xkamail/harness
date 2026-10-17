@@ -15,8 +15,6 @@ var (
 	// ErrStaleApproval: a decision names a confirmation or plan that is no
 	// longer the conversation's open one.
 	ErrStaleApproval = errors.New("harness: approval is not open")
-	// ErrNotImplemented marks the draft's unported bodies.
-	ErrNotImplemented = errors.New("harness: not implemented")
 )
 
 // retryable is implemented by adapter errors that know their class.

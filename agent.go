@@ -3,7 +3,13 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // Interaction tool names owned by the harness. A run that ends on one of
@@ -59,16 +65,199 @@ type Agent struct {
 // compiled is what Compile derives once: validated schemas, the registry,
 // the tool definitions sent to the model and the result cache.
 type compiled struct {
-	defs []ToolDef
+	defs        []ToolDef
+	tools       map[string]*registered
+	order       []string
+	interaction map[string]*jsonschema.Schema
+	cache       resultCache
 }
+
+const (
+	defaultMaxIterations = 8
+
+	askUserSchema = `{
+	"type": "object",
+	"properties": {
+		"question": {"type": "string", "minLength": 1},
+		"options": {"type": "array", "items": {"type": "string"}}
+	},
+	"required": ["question"],
+	"additionalProperties": false
+}`
+
+	planSchema = `{
+	"type": "object",
+	"properties": {
+		"title": {"type": "string"},
+		"steps": {
+			"type": "array",
+			"minItems": 1,
+			"items": {
+				"type": "object",
+				"properties": {
+					"summary": {"type": "string", "minLength": 1},
+					"tool": {"type": "string", "minLength": 1},
+					"arguments": {"type": "object"}
+				},
+				"required": ["summary", "tool", "arguments"],
+				"additionalProperties": false
+			}
+		}
+	},
+	"required": ["steps"],
+	"additionalProperties": false
+}`
+
+	// stepLimitPrompt is the last call's instruction once a run is out of
+	// steps or budget.
+	stepLimitPrompt = "You have reached this run's step limit and cannot call tools now. Reply in plain text: what you found, what you changed, and what is left. The user can send a message to continue."
+)
 
 // Compile validates a and compiles every schema. It fails on an empty name,
 // a duplicate or reserved tool name, a tool without a Handler, or a bad
 // schema.
 func Compile(a Agent) (*Agent, error) {
-	// TODO: validate, compile schemas, add interaction tools.
-	a.c = &compiled{}
+	if a.Name == "" {
+		return nil, errors.New("harness: agent name required")
+	}
+	if a.MaxIterations < 0 || a.Timeout < 0 {
+		return nil, fmt.Errorf("harness: agent %q has a negative limit", a.Name)
+	}
+	c := &compiled{tools: make(map[string]*registered), interaction: make(map[string]*jsonschema.Schema)}
+	tools := a.Tools
+	for _, t := range tools {
+		switch t.Name {
+		case ToolPropose, ToolAskUser, ToolPlan, ToolLoadSkill:
+			return nil, fmt.Errorf("harness: tool name %q is reserved", t.Name)
+		}
+	}
+	if len(a.Skills) > 0 {
+		st, err := skillTool(a.Skills)
+		if err != nil {
+			return nil, err
+		}
+		tools = append(slices.Clip(tools), st)
+	}
+	for _, t := range tools {
+		if err := c.register(t); err != nil {
+			return nil, err
+		}
+	}
+	for _, name := range c.order {
+		t := c.tools[name]
+		c.defs = append(c.defs, ToolDef{Name: t.Name, Description: t.Description, Schema: t.Schema})
+	}
+
+	if len(a.ProposalSchema) > 0 {
+		s, err := compileSchema(ToolPropose, a.ProposalSchema)
+		if err != nil {
+			return nil, err
+		}
+		c.interaction[ToolPropose] = s
+		c.defs = append(c.defs, ToolDef{
+			Name:        ToolPropose,
+			Description: "Call when you have a complete, tool-verified proposal for the user to confirm. Ends your turn; do not call other tools afterwards.",
+			Schema:      a.ProposalSchema,
+		})
+	}
+	if slices.ContainsFunc(a.Tools, func(t Tool) bool { return t.Tier > TierSafe || t.TierOf != nil }) {
+		s, err := compileSchema(ToolPlan, json.RawMessage(planSchema))
+		if err != nil {
+			return nil, err
+		}
+		c.interaction[ToolPlan] = s
+		c.defs = append(c.defs, ToolDef{
+			Name:        ToolPlan,
+			Description: "Call to propose a multi-step plan of exact tool calls (tool plus arguments) for the user to approve as a whole. Ends your turn. After they approve, call each step exactly as listed.",
+			Schema:      json.RawMessage(planSchema),
+		})
+	}
+	ask, err := compileSchema(ToolAskUser, json.RawMessage(askUserSchema))
+	if err != nil {
+		return nil, err
+	}
+	c.interaction[ToolAskUser] = ask
+	c.defs = append(c.defs, ToolDef{
+		Name:        ToolAskUser,
+		Description: "Call when you need the user to choose or clarify something you cannot determine with tools. Ends your turn.",
+		Schema:      json.RawMessage(askUserSchema),
+	})
+	a.c = c
 	return &a, nil
+}
+
+func (c *compiled) register(t Tool) error {
+	switch {
+	case t.Name == "":
+		return errors.New("harness: tool name required")
+	case c.tools[t.Name] != nil:
+		return fmt.Errorf("harness: duplicate tool %q", t.Name)
+	case t.Handler == nil:
+		return fmt.Errorf("harness: tool %q has no handler", t.Name)
+	case t.Timeout < 0 || t.MaxResultBytes < 0 || t.CacheTTL < 0:
+		return fmt.Errorf("harness: tool %q has a negative limit", t.Name)
+	case (t.Tier > TierSafe || t.TierOf != nil) && t.CacheTTL > 0:
+		return fmt.Errorf("harness: tool %q is gated and must not be cached", t.Name)
+	case t.GrantGroup != "" && (t.Tier != TierDisruptive || t.TierOf != nil):
+		return fmt.Errorf("harness: tool %q has a grant group but is not disruptive", t.Name)
+	}
+	if len(t.Schema) == 0 {
+		t.Schema = json.RawMessage(`{"type":"object"}`)
+	}
+	if t.Timeout == 0 {
+		t.Timeout = defaultToolTimeout
+	}
+	if t.MaxResultBytes == 0 {
+		t.MaxResultBytes = defaultMaxResultBytes
+	}
+	s, err := compileSchema(t.Name, t.Schema)
+	if err != nil {
+		return err
+	}
+	c.tools[t.Name] = &registered{Tool: t, schema: s}
+	c.order = append(c.order, t.Name)
+	return nil
+}
+
+// skillTool is load_skill over skills.
+func skillTool(skills []Skill) (Tool, error) {
+	bodies := make(map[string]string, len(skills))
+	topics := make([]string, 0, len(skills))
+	var desc strings.Builder
+	desc.WriteString("Call to load the playbook for a topic before working on it. Topics:")
+	for _, s := range skills {
+		if s.Topic == "" {
+			return Tool{}, errors.New("harness: skill topic required")
+		}
+		if _, ok := bodies[s.Topic]; ok {
+			return Tool{}, fmt.Errorf("harness: duplicate skill %q", s.Topic)
+		}
+		bodies[s.Topic] = s.Body
+		topics = append(topics, s.Topic)
+		fmt.Fprintf(&desc, "\n- %s: %s", s.Topic, s.Description)
+	}
+	enum, err := json.Marshal(topics)
+	if err != nil {
+		return Tool{}, err
+	}
+	return Tool{
+		Name:        ToolLoadSkill,
+		Description: desc.String(),
+		Schema:      json.RawMessage(`{"type":"object","properties":{"topic":{"type":"string","enum":` + string(enum) + `}},"required":["topic"],"additionalProperties":false}`),
+		Label:       "Loading skill",
+		Handler: func(_ context.Context, args json.RawMessage) (any, error) {
+			var in struct{ Topic string }
+			if err := json.Unmarshal(args, &in); err != nil {
+				return nil, err
+			}
+			return bodies[in.Topic], nil
+		},
+		Describe: func(args json.RawMessage) string {
+			var in struct{ Topic string }
+			_ = json.Unmarshal(args, &in)
+			return in.Topic
+		},
+	}, nil
 }
 
 // MustCompile is Compile that panics, for a project's agent registry.
@@ -84,12 +273,203 @@ func MustCompile(a Agent) *Agent {
 // interaction tool, a gated call is held, a tool ends the turn, or a limit is
 // reached. On error the result is still non-nil and carries the usage and
 // messages accumulated so far, so spend is never lost.
+//
+// A held call gets no tool message in Messages: the Decision of the next run
+// answers it.
 func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, error) {
 	if a == nil || a.c == nil {
 		return &RunResult{}, ErrNotCompiled
 	}
-	// TODO: port the loop from mccloud pkg/ai/loop.go.
-	return &RunResult{Provider: m.Provider(), Model: m.Model()}, ErrNotImplemented
+	start := time.Now()
+	res := &RunResult{Provider: m.Provider(), Model: m.Model(), Messages: make([]Message, 0)}
+	defer func() { res.Duration = time.Since(start) }()
+	if a.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, a.Timeout)
+		defer cancel()
+	}
+	runID := cfg.RunID
+	if runID == "" {
+		runID = "run"
+	}
+
+	msgs := make([]Message, 0, len(cfg.History)+3)
+	if sys := strings.TrimSpace(a.PlatformPrompt + "\n\n" + a.SystemPrompt); sys != "" {
+		msgs = append(msgs, Message{Role: RoleSystem, Content: sys})
+	}
+	if a.Context != nil {
+		live, err := a.Context(ctx)
+		if err != nil {
+			return res, fmt.Errorf("harness: agent context: %w", err)
+		}
+		if live != "" {
+			msgs = append(msgs, Message{Role: RoleSystem, Content: live})
+		}
+	}
+	msgs = append(msgs, cfg.History...)
+	add := func(ms ...Message) {
+		msgs = append(msgs, ms...)
+		res.Messages = append(res.Messages, ms...)
+	}
+
+	granted := slices.Clone(cfg.Grants.Tools)
+	if cfg.Decision != nil {
+		t, msg, err := a.decide(ctx, msgs, granted, cfg)
+		if err != nil {
+			return res, err
+		}
+		if msg != nil {
+			add(*msg)
+			res.Blocks = append(res.Blocks, t.blocks...)
+			if t.endsTurn {
+				res.Stop = StopEndsTurn
+				return res, nil
+			}
+		}
+	}
+
+	maxIter := a.MaxIterations
+	if maxIter == 0 {
+		maxIter = defaultMaxIterations
+	}
+	for res.Iterations < maxIter {
+		if cfg.Inbox != nil && res.Iterations > 0 {
+			in, revoke, err := cfg.Inbox(ctx)
+			if err != nil {
+				return res, fmt.Errorf("harness: inbox: %w", err)
+			}
+			add(in...)
+			if revoke {
+				granted = nil
+			}
+		}
+		id := MessageID(runID, res.Iterations+1)
+		overBudget := cfg.Budget.spent(res.Usage)
+		req := Request{Messages: msgs, Tools: a.c.defs, ReasoningEffort: a.ReasoningEffort}
+		if cfg.OnDelta != nil {
+			req.OnDelta = func(text string) { cfg.OnDelta(id, text) }
+		}
+		if cfg.OnReasoning != nil {
+			req.OnReasoning = func(text string) { cfg.OnReasoning(id, text) }
+		}
+		if cfg.OnReset != nil {
+			req.OnReset = func() { cfg.OnReset(id) }
+		}
+		if overBudget || res.Iterations == maxIter-1 {
+			// the last call ends the run with what was found instead of an error
+			req.Messages = append(slices.Clip(msgs), Message{Role: RoleSystem, Content: stepLimitPrompt})
+			req.NoToolCalls = true
+		}
+		resp, err := m.Message(ctx, req)
+		if err != nil {
+			return res, fmt.Errorf("harness: model call: %w", err)
+		}
+		res.Iterations++
+		res.Usage = res.Usage.Add(resp.Usage)
+		if resp.Usage.InputTokens > 0 {
+			res.ContextTokens = resp.Usage.InputTokens
+		}
+
+		msg := resp.Message
+		msg.ID, msg.Role = id, RoleAssistant
+		if len(msg.ToolCalls) == 0 {
+			if strings.TrimSpace(msg.Content) == "" {
+				return res, ErrNoFinalReply
+			}
+			res.Reply = msg.Content
+			res.Stop = StopReply
+			if overBudget {
+				res.Stop = StopBudget
+			}
+			add(msg)
+			return res, nil
+		}
+		if overBudget {
+			return res, ErrBudgetExceeded
+		}
+		if req.NoToolCalls {
+			return res, ErrMaxIterations
+		}
+		// Record the assistant turn only together with its tool results, so
+		// Messages never holds unanswered calls but the held one.
+		t, err := a.runTurn(ctx, id, msg.ToolCalls, granted, false, cfg)
+		if err != nil {
+			return res, err
+		}
+		add(msg)
+		for i, call := range msg.ToolCalls {
+			if t.confirm == nil || call.ID != t.confirm.ID {
+				add(Message{Role: RoleTool, Content: t.outs[i], ToolCallID: call.ID})
+			}
+		}
+		res.Blocks = append(res.Blocks, t.blocks...)
+		switch {
+		case t.interaction != nil:
+			res.Interaction, res.Stop = t.interaction, StopInteraction
+			return res, nil
+		case t.confirm != nil:
+			res.Confirm, res.ConfirmPreview, res.Stop = t.confirm, t.preview, StopConfirm
+			return res, nil
+		case t.endsTurn:
+			res.Stop = StopEndsTurn
+			return res, nil
+		}
+	}
+	return res, ErrMaxIterations
+}
+
+// decide applies cfg.Decision to the held call it names, returning the
+// call's tool message. It returns a nil message when the latest assistant
+// turn holds no unanswered call with that id, such as a plan's.
+func (a *Agent) decide(ctx context.Context, msgs []Message, granted []string, cfg RunConfig) (*turn, *Message, error) {
+	d := cfg.Decision
+	var (
+		turnID string
+		call   *ToolCall
+	)
+	for i := len(msgs) - 1; i >= 0 && call == nil; i-- {
+		m := msgs[i]
+		if m.Role == RoleTool && m.ToolCallID == d.ApprovalID {
+			return nil, nil, nil // already answered
+		}
+		if m.Role != RoleAssistant || len(m.ToolCalls) == 0 {
+			continue
+		}
+		j := slices.IndexFunc(m.ToolCalls, func(c ToolCall) bool { return c.ID == d.ApprovalID })
+		if j < 0 {
+			return nil, nil, nil
+		}
+		turnID, call = m.ID, &m.ToolCalls[j]
+	}
+	if call == nil {
+		return nil, nil, nil
+	}
+	if d.Decision == DecisionReject {
+		if cfg.OnToolStart != nil {
+			cfg.OnToolStart(turnID, *call, a.Display(*call))
+		}
+		if cfg.OnToolDone != nil {
+			cfg.OnToolDone(*call, ToolOutcome{})
+		}
+		out := map[string]string{"status": "rejected", "message": "The user rejected this call. Do not retry it unless they ask."}
+		if d.Note != "" {
+			out["note"] = d.Note
+		}
+		b, _ := json.Marshal(out)
+		return &turn{}, &Message{Role: RoleTool, Content: string(b), ToolCallID: call.ID}, nil
+	}
+	t, err := a.runTurn(ctx, turnID, []ToolCall{*call}, granted, true, cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return t, &Message{Role: RoleTool, Content: t.outs[0], ToolCallID: call.ID}, nil
+}
+
+// spent reports whether u has used up b, or its deadline has passed.
+func (b Budget) spent(u Usage) bool {
+	return b.MaxInputTokens > 0 && u.InputTokens >= b.MaxInputTokens ||
+		b.MaxOutputTokens > 0 && u.OutputTokens >= b.MaxOutputTokens ||
+		!b.Deadline.IsZero() && !time.Now().Before(b.Deadline)
 }
 
 // Defs returns the tool definitions sent to the model, interaction tools
@@ -98,18 +478,48 @@ func (a *Agent) Defs() []ToolDef { return a.c.defs }
 
 // Tier returns call's tier; unknown tools are TierSafe.
 func (a *Agent) Tier(call ToolCall) Tier {
-	// TODO
-	return TierSafe
+	t, ok := a.c.tools[call.Name]
+	switch {
+	case !ok:
+		return TierSafe
+	case t.TierOf != nil:
+		return t.TierOf(call.Arguments)
+	default:
+		return t.Tier
+	}
 }
 
-// Display returns how call is shown to the user.
+// Display returns how call is shown to the user. Interaction tools and
+// unknown names are Hidden.
 func (a *Agent) Display(call ToolCall) ToolDisplay {
-	// TODO
-	return ToolDisplay{Label: call.Name}
+	t, ok := a.c.tools[call.Name]
+	if !ok {
+		return ToolDisplay{Label: call.Name, Summary: call.Name, Hidden: true}
+	}
+	d := ToolDisplay{Label: t.Label, Section: t.Section, Hidden: t.Hidden}
+	if d.Label == "" {
+		d.Label = t.Name
+	}
+	d.Summary = d.Label
+	if t.Describe != nil {
+		if s := t.Describe(call.Arguments); s != "" {
+			d.Summary = s
+		}
+	}
+	return d
 }
 
 // GrantGroup returns the tools sharing name's grant group, or nil.
 func (a *Agent) GrantGroup(name string) []string {
-	// TODO
-	return nil
+	t, ok := a.c.tools[name]
+	if !ok || t.GrantGroup == "" {
+		return nil
+	}
+	var out []string
+	for _, n := range a.c.order {
+		if a.c.tools[n].GrantGroup == t.GrantGroup {
+			out = append(out, n)
+		}
+	}
+	return out
 }
