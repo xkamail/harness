@@ -12,8 +12,8 @@ var (
 	ErrBudgetExceeded = errors.New("harness: budget exceeded")
 	// ErrNotCompiled: Run on an Agent that did not come from Compile.
 	ErrNotCompiled = errors.New("harness: agent not compiled")
-	// ErrScope: a conversation's scope does not match its agent's.
-	ErrScope = errors.New("harness: scope mismatch")
+	// ErrContext: a conversation lacks one of its agent's ContextKeys.
+	ErrContext = errors.New("harness: conversation context missing a key")
 	// ErrStaleApproval: a decision names a confirmation or plan that is no
 	// longer the conversation's open one.
 	ErrStaleApproval = errors.New("harness: approval is not open")

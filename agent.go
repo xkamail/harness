@@ -39,7 +39,7 @@ type Agent struct {
 	// Skills adds load_skill when non-empty.
 	Skills []Skill
 	// Memory adds remember, forget and recall, and injects pinned and
-	// scoped memories into every run. Nil means no memory.
+	// contextual memories into every run. Nil means no memory.
 	Memory MemoryStore
 
 	// ProposalSchema adds the propose tool. Empty means nothing to propose.
@@ -48,10 +48,11 @@ type Agent struct {
 	// completed arguments. Its error goes to the model verbatim.
 	PrepareProposal func(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 
-	// Scope is the scope kind conversations must be bound to, such as
-	// "server" or "tournament"; empty means unbound.
-	Scope  string
-	Policy Policy
+	// ContextKeys are the Values keys every conversation of this agent must
+	// carry, such as "serverId"; starting one without them fails with
+	// ErrContext.
+	ContextKeys []string
+	Policy      Policy
 	// Approver reports whether p may confirm gated calls in c. Nil means
 	// only the conversation's owner.
 	Approver func(ctx context.Context, c Conversation, p Principal) bool

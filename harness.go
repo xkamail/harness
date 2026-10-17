@@ -19,7 +19,8 @@
 //   - agent.go: the Agent, Compile and Run
 //   - policy.go: conversation and model policies
 //   - run.go: RunConfig, RunResult, grants and the runner seams
-//   - conversation.go: scope, principal and conversation
+//   - conversation.go: principal and conversation
+//   - values.go: Values, the conversation context tools read from ctx
 //   - event.go: events, Store, Bus and Follow
 //   - memory.go: memories and MemoryStore
 //   - compaction.go: history compaction

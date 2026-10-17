@@ -6,18 +6,18 @@ type Policy int
 const (
 	// PolicyNew starts a new conversation on every start.
 	PolicyNew Policy = iota
-	// PolicyPerSubject keeps one conversation per (owner, agent, scope) and
+	// PolicyPerContext keeps one conversation per (owner, agent, Values) and
 	// resumes it.
-	PolicyPerSubject
-	// PolicyShared keeps one conversation per (agent, scope) that several
+	PolicyPerContext
+	// PolicyShared keeps one conversation per (agent, Values) that several
 	// principals write to, such as a support thread.
 	PolicyShared
 )
 
 func (p Policy) String() string {
 	switch p {
-	case PolicyPerSubject:
-		return "per_subject"
+	case PolicyPerContext:
+		return "per_context"
 	case PolicyShared:
 		return "shared"
 	default:

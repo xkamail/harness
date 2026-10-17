@@ -27,23 +27,24 @@ type Memory struct {
 	OwnerID string     `json:"ownerId"`
 	Kind    MemoryKind `json:"kind"`
 	Content string     `json:"content"`
-	// Scope is the subject it is about; zero means owner-wide.
-	Scope Scope `json:"scope"`
+	// Context is what it is about, such as {"serverId": "…"}; empty means
+	// owner-wide. It is visible in conversations whose Context contains it.
+	Context Values `json:"context"`
 	// Pinned memories are loaded on every run; the rest only by Search.
 	Pinned    bool      `json:"pinned"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-// MemoryQuery selects memories. Results never cross OwnerID or leave Scopes;
-// implementations filter in the query, not after.
+// MemoryQuery selects memories. Results never cross OwnerID and only
+// include memories whose Context the query's Context contains (owner-wide
+// ones always); implementations filter in the query, not after.
 type MemoryQuery struct {
 	OwnerID string
-	// Scopes are the subjects visible to this run; the zero Scope means
-	// owner-wide memories.
-	Scopes []Scope
-	Kinds  []MemoryKind
-	Limit  int
+	// Context is the conversation's.
+	Context Values
+	Kinds   []MemoryKind
+	Limit   int
 }
 
 // MemoryStore keeps memories. Projects own the table; harnesstest.MemoryStore

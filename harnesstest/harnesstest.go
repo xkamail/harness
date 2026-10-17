@@ -91,7 +91,7 @@ func Follow(t *testing.T, newStore func(t *testing.T) harness.Store) {
 }
 
 // MemoryStore checks a MemoryStore: results never cross owners or leave the
-// queried scopes, Save with an id updates, Forget deletes.
+// query's Context (containment), Save with an id updates, Forget deletes.
 func MemoryStore(t *testing.T, newStore func(t *testing.T) harness.MemoryStore) {
 	t.Helper()
 	// TODO

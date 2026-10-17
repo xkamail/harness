@@ -5,19 +5,6 @@ import (
 	"time"
 )
 
-// Scope is what a conversation is bound to. Tools read it from ctx and never
-// take an id from the model, so no prompt can point a tool elsewhere.
-type Scope struct {
-	// Kind is project-defined, such as "server", "tournament",
-	// "discord_thread"; empty means unbound.
-	Kind string `json:"kind"`
-	// ID is always a string, whatever the project's id type.
-	ID string `json:"id"`
-}
-
-// IsZero reports whether s binds nothing.
-func (s Scope) IsZero() bool { return s.Kind == "" }
-
 // Principal is a person acting in a conversation.
 type Principal struct {
 	ID string `json:"id"`
@@ -44,7 +31,8 @@ type Conversation struct {
 	// Agent is the Agent.Name it runs.
 	Agent   string `json:"agent"`
 	OwnerID string `json:"ownerId"`
-	Scope   Scope  `json:"scope"`
+	// Context is set once at start and put in every run's ctx (Values).
+	Context Values `json:"context"`
 	// ParentID is the conversation this one was handed off from.
 	ParentID string `json:"parentId,omitempty"`
 	Title    string `json:"title,omitempty"`
@@ -59,21 +47,9 @@ type Conversation struct {
 }
 
 type (
-	scopeKey        struct{}
 	principalKey    struct{}
 	conversationKey struct{}
 )
-
-// WithScope returns ctx carrying s, for tools and Context to read.
-func WithScope(ctx context.Context, s Scope) context.Context {
-	return context.WithValue(ctx, scopeKey{}, s)
-}
-
-// ScopeFrom returns the scope set by WithScope, or the zero Scope.
-func ScopeFrom(ctx context.Context) Scope {
-	s, _ := ctx.Value(scopeKey{}).(Scope)
-	return s
-}
 
 // WithPrincipal returns ctx carrying the principal the run acts for.
 func WithPrincipal(ctx context.Context, p Principal) context.Context {
