@@ -46,7 +46,11 @@ const el = (cls, text) => { const d = document.createElement("div"); d.className
 const add = (node) => { log.append(node); node.scrollIntoView({ block: "end" }); return node; };
 
 // assistant bubble keyed by MessageID: deltas append, step.reset clears, agent.message replaces
-const bubble = (mid) => document.querySelector(`[data-mid="${mid}"]`) || add(Object.assign(el("msg agent"), { dataset: { mid } }));
+const bubble = (mid) => {
+  let b = document.querySelector(`[data-mid="${mid}"]`);
+  if (!b) { b = add(el("msg agent")); b.dataset.mid = mid; }
+  return b;
+};
 
 // tool line keyed by ToolCallID: tool_start (live) or tool_call (replay) creates it
 const toolLine = (id, label) => {
