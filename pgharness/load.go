@@ -57,7 +57,7 @@ func Load(ctx context.Context, conversationID, runID string) (*Loaded, error) {
 		Conversation: *c,
 		Ctx:          rctx,
 		History:      b.msgs,
-		Grants:       harness.Grants{Tools: b.grants},
+		Grants:       harness.Grants{Tools: b.grants, Calls: b.calls},
 		Decision:     b.decision,
 		Inbox:        newInbox(conversationID),
 	}, nil
@@ -108,15 +108,19 @@ type historyBuilder struct {
 	unresolved []string
 	results    map[string]bool
 	// groups are the GrantGroups offered by each agent.confirm.
-	groups   map[string][]string
-	open     string
-	grants   []string
+	groups map[string][]string
+	// plans are the step CallKeys of each agent.plan.
+	plans  map[string][]string
+	open   string
+	grants []string
+	// calls are the approved plan steps not called yet.
+	calls    []string
 	decision *harness.DecisionPayload
 }
 
 func (b *historyBuilder) add(ev harness.Event) error {
 	if b.results == nil {
-		b.results, b.groups = map[string]bool{}, map[string][]string{}
+		b.results, b.groups, b.plans = map[string]bool{}, map[string][]string{}, map[string][]string{}
 	}
 	b.last = ev.Seq
 	switch ev.Type {
@@ -126,7 +130,7 @@ func (b *historyBuilder) add(ev harness.Event) error {
 			return err
 		}
 		b.supersede(ev.Seq)
-		b.open, b.grants, b.decision = "", nil, nil
+		b.open, b.grants, b.calls, b.decision = "", nil, nil, nil
 		b.push(ev.Seq, harness.Message{Role: harness.RoleUser, Content: p.Text, Parts: slices.Clone(p.Parts)})
 	case harness.EventMessage:
 		var p harness.MessagePayload
@@ -148,6 +152,9 @@ func (b *historyBuilder) add(ev harness.Event) error {
 			b.push(ev.Seq, harness.Message{ID: ev.MessageID, Role: harness.RoleAssistant, ToolCalls: []harness.ToolCall{call}})
 		}
 		b.unresolved = append(b.unresolved, call.ID)
+		if i := slices.Index(b.calls, harness.CallKey(call)); i >= 0 {
+			b.calls = slices.Delete(b.calls, i, i+1)
+		}
 	case harness.EventToolResult:
 		var p ToolResultPayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
@@ -164,7 +171,12 @@ func (b *historyBuilder) add(ev harness.Event) error {
 		b.open = ev.ToolCallID
 		b.groups[ev.ToolCallID] = p.GrantGroup
 	case harness.EventPlan:
+		var p InteractionPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			return err
+		}
 		b.open = ev.ToolCallID
+		b.plans[ev.ToolCallID] = harness.PlanCalls(harness.ToolCall{Name: p.Name, Arguments: p.Arguments})
 	case harness.EventDecision:
 		var p harness.DecisionPayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
@@ -175,7 +187,11 @@ func (b *historyBuilder) add(ev harness.Event) error {
 		}
 		b.open = ""
 		b.decision = &p
-		if p.Decision == harness.DecisionApproveAll {
+		switch {
+		case p.Decision == harness.DecisionReject:
+		case b.plans[p.ApprovalID] != nil:
+			b.calls = append(b.calls, b.plans[p.ApprovalID]...)
+		case p.Decision == harness.DecisionApproveAll:
 			b.grants = append(b.grants, b.groups[p.ApprovalID]...)
 		}
 	case harness.EventSummary:

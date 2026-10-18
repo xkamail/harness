@@ -12,8 +12,9 @@ type RunConfig struct {
 	RunID   string
 	History []Message
 	Grants  Grants
-	// Decision answers the call the previous run held (last in History). The caller
-	// must check ErrStaleApproval and permissions first, and add GrantGroup to Grants on approve_all.
+	// Decision answers the call the previous run held or the plan it proposed (last in
+	// History). The caller must check ErrStaleApproval and permissions first, add
+	// GrantGroup to Grants.Tools on approve_all, and PlanCalls to Grants.Calls on a plan's approve.
 	Decision *DecisionPayload
 	// Nil runs calls concurrently in-process; dbosharness.Tools makes each a durable step.
 	Tools ToolRunner
@@ -43,10 +44,12 @@ type ToolRunner func(ctx context.Context, fns []func(context.Context) (string, e
 // Inbox returns messages since its last call; revoke drops the run's grants.
 type Inbox func(ctx context.Context) (msgs []Message, revoke bool, err error)
 
-// Grants come from approve_all decisions since the last user instruction.
+// Grants come from approve_all decisions and approved plans since the last user instruction.
 type Grants struct {
 	// Callable with any arguments; never applies to TierDestructive tools.
 	Tools []string
+	// CallKeys of an approved plan's steps: each runs once, at any tier.
+	Calls []string
 }
 
 type ToolOutcome struct {

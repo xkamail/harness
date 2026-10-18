@@ -106,7 +106,7 @@ type convo struct {
 	grants  harness.Grants
 	status  harness.Status
 	runs    int
-	held    *harness.ToolCall // the open confirmation
+	held    *harness.ToolCall // the open confirmation or plan
 	queued  []queuedMsg       // steering messages the run has not read yet
 	taken   []int64           // Seq of queued messages the run read, in order
 }
@@ -236,14 +236,17 @@ func (c *convo) postMessage(w http.ResponseWriter, r *http.Request) {
 		ev := newEvent(harness.EventUserQueued, "", userPayload{Text: in.Text})
 		c.emitLocked(ev)
 		c.queued = append(c.queued, queuedMsg{seq: int64(len(c.events)), text: in.Text})
-	case harness.StatusAwaitingInput:
-		http.Error(w, "answer the confirmation first", http.StatusConflict)
-		return
 	default:
+		// the user moved on: the open confirmation or plan lapses
+		if c.held != nil {
+			c.history = append(c.history, harness.Message{Role: harness.RoleTool, ToolCallID: c.held.ID,
+				Content: `{"status":"not_run","note":"the user's next message answers or replaces this call"}`})
+			c.held = nil
+		}
 		c.deliverQueuedLocked()
 		c.emitLocked(newEvent(harness.EventUserMessage, "", userPayload{Text: in.Text}))
 		c.history = append(c.history, harness.Message{Role: harness.RoleUser, Content: in.Text})
-		c.startLocked(nil)
+		c.startLocked(nil, nil)
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -272,11 +275,16 @@ func (c *convo) postDecision(w http.ResponseWriter, r *http.Request) {
 	ev := newEvent(harness.EventDecision, "", d)
 	ev.ToolCallID = d.ApprovalID
 	c.emitLocked(ev)
-	if d.Decision == harness.DecisionApproveAll {
+	var calls []string
+	switch {
+	case d.Decision == harness.DecisionReject:
+	case c.held.Name == harness.ToolPlan:
+		calls = harness.PlanCalls(*c.held)
+	case d.Decision == harness.DecisionApproveAll:
 		c.grants.Tools = append(c.grants.Tools, agent.GrantGroup(c.held.Name)...)
 	}
 	c.held = nil
-	c.startLocked(&d)
+	c.startLocked(&d, calls)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -289,7 +297,8 @@ func (c *convo) deliverQueuedLocked() {
 	c.queued = nil
 }
 
-func (c *convo) startLocked(d *harness.DecisionPayload) {
+// calls are an approved plan's steps; only the run the approval starts gets them.
+func (c *convo) startLocked(d *harness.DecisionPayload, calls []string) {
 	c.runs++
 	runID := "r" + strconv.Itoa(c.runs)
 	c.status = harness.StatusRunning
@@ -297,7 +306,7 @@ func (c *convo) startLocked(d *harness.DecisionPayload) {
 	cfg := harness.RunConfig{
 		RunID:    runID,
 		History:  append([]harness.Message(nil), c.history...),
-		Grants:   harness.Grants{Tools: append([]string(nil), c.grants.Tools...)},
+		Grants:   harness.Grants{Tools: append([]string(nil), c.grants.Tools...), Calls: calls},
 		Decision: d,
 	}
 	go c.run(cfg)
@@ -349,6 +358,15 @@ func (c *convo) run(cfg harness.RunConfig) {
 		ev.ToolCallID = call.ID
 		c.emitLocked(ev)
 		c.status = harness.StatusAwaitingInput
+	case res.Interaction != nil && res.Interaction.Name == harness.ToolPlan:
+		call := *res.Interaction
+		c.held = &call
+		ev := newEvent(harness.EventPlan, runID, struct {
+			Arguments json.RawMessage `json:"arguments"`
+		}{call.Arguments})
+		ev.ToolCallID = call.ID
+		c.emitLocked(ev)
+		c.status = harness.StatusAwaitingInput
 	}
 	c.emitLocked(newEvent(harness.EventStatus, runID, harness.StatusPayload{
 		Status:     c.status,
@@ -360,7 +378,7 @@ func (c *convo) run(cfg harness.RunConfig) {
 	// a message queued after the run's last Inbox read still needs an answer
 	if c.status == harness.StatusIdle && len(c.queued) > 0 {
 		c.deliverQueuedLocked()
-		c.startLocked(nil)
+		c.startLocked(nil, nil)
 	}
 }
 

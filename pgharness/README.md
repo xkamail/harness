@@ -247,7 +247,9 @@ Rebuilds everything from the log, in one pass over `harness.events`:
   `tool_call` / `tool_result`. A `session.summary` replaces everything before
   its `through` seq with one summary message.
 - **Grants.** `Grants.Tools` is the union of `GrantGroup`s approved with
-  `approve_all` since the last `user.message`; a new user line clears them.
+  `approve_all` since the last `user.message`. `Grants.Calls` are the
+  `CallKey`s of an approved `agent.plan`'s steps not called yet, each good
+  for one call at any tier. A new user line clears both.
 - **Decision.** The `user.decision` after the latest `agent.confirm` or
   `agent.plan`, if the run was started by it. A retried run whose decided call
   already has a result in the log gets no Decision, so an approved call never
@@ -474,9 +476,6 @@ Keep the `ai_*` tables read-only for a while after the copy, for rollback.
 
 ## Open questions
 
-- **Plan approval.** `Grants` now holds only tools; how an approved plan's
-  exact steps are matched (`CallKey`) needs a home: `Loaded.Plan` with the
-  approved step keys, or a field on `RunConfig`.
 - **Per-turn persistence.** Writing events at `Finish` means a client that
   reconnects mid-run sees no tool progress until the run ends (mccloud
   today). Persisting each turn as it completes would fix that.

@@ -89,6 +89,7 @@ function onEvent(ev) {
     }
     case "agent.tool_result": toolLine(ev.toolCallId, "").classList.add("ok"); break;
     case "agent.confirm": confirmCard(ev.toolCallId, p); break;
+    case "agent.plan": planCard(ev.toolCallId, p.arguments); break;
     case "user.decision": {
       const card = document.querySelector(`[data-approval="${ev.toolCallId}"]`);
       if (card) {
@@ -116,6 +117,16 @@ function confirmCard(id, p) {
   const btn = (text, decision) => { const b = document.createElement("button"); b.textContent = text; b.onclick = () => decide(decision); card.append(b); };
   btn("Approve", "approve");
   if (p.grantGroup?.length) btn(`Approve all (${p.grantGroup.join(", ")})`, "approve_all");
+  btn("Reject", "reject");
+}
+
+function planCard(id, plan) {
+  const card = add(el("confirm"));
+  card.dataset.approval = id;
+  card.append(el("", `Plan: ${plan.title || "steps"}`));
+  plan.steps.forEach((s, i) => card.append(el("", `${i + 1}. ${s.summary} (${s.tool})`)));
+  const btn = (text, decision) => { const b = document.createElement("button"); b.textContent = text; b.onclick = () => post("/api/decision", { approvalId: id, decision }); card.append(b); };
+  btn("Approve plan", "approve");
   btn("Reject", "reject");
 }
 

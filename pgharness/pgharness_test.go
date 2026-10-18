@@ -364,6 +364,50 @@ func TestCompact(t *testing.T) {
 	}
 }
 
+func TestPlanGrants(t *testing.T) {
+	ctx := setup(t)
+	c, run := mustStart(t, ctx, nil, StartParams{Message: "fix it"})
+	plan := harness.ToolCall{ID: "p1", Name: harness.ToolPlan, Arguments: json.RawMessage(`{"steps":[
+		{"summary":"a","tool":"restart","arguments":{"svc":"a"}},
+		{"summary":"b","tool":"restart","arguments":{"svc":"b"}}]}`)}
+	mustFinish(t, ctx, c.ID, run, &harness.RunResult{Stop: harness.StopInteraction, Interaction: &plan, Messages: []harness.Message{
+		{ID: run + ".1", Role: harness.RoleAssistant, ToolCalls: []harness.ToolCall{plan}},
+	}}, nil)
+	run, err := Send(ctx, nil, SendParams{ConversationID: c.ID, Decision: &harness.DecisionPayload{ApprovalID: "p1", Decision: harness.DecisionApprove}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := mustLoad(t, ctx, c.ID, run)
+	if l.Decision == nil || fmt.Sprint(l.Grants.Calls) != fmt.Sprint(harness.PlanCalls(plan)) {
+		t.Fatalf("decision %+v calls %v", l.Decision, l.Grants.Calls)
+	}
+
+	// the run calls step a, then stops on another tool's confirm: the next
+	// run is granted only step b
+	other := harness.ToolCall{ID: "c2", Name: "restart", Arguments: json.RawMessage(`{"svc":"c"}`)}
+	mustFinish(t, ctx, c.ID, run, &harness.RunResult{Stop: harness.StopConfirm, Confirm: &other, Messages: []harness.Message{
+		{Role: harness.RoleTool, ToolCallID: "p1", Content: `{"status":"approved"}`},
+		{ID: run + ".1", Role: harness.RoleAssistant, ToolCalls: []harness.ToolCall{{ID: "c1", Name: "restart", Arguments: json.RawMessage(`{"svc": "a"}`)}}},
+		{Role: harness.RoleTool, ToolCallID: "c1", Content: `"ok"`},
+		{ID: run + ".2", Role: harness.RoleAssistant, ToolCalls: []harness.ToolCall{other}},
+	}}, nil)
+	run, err = Send(ctx, nil, SendParams{ConversationID: c.ID, Decision: &harness.DecisionPayload{ApprovalID: "c2", Decision: harness.DecisionApprove}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l = mustLoad(t, ctx, c.ID, run)
+	if want := harness.PlanCalls(plan)[1:]; fmt.Sprint(l.Grants.Calls) != fmt.Sprint(want) {
+		t.Fatalf("calls %v, want %v", l.Grants.Calls, want)
+	}
+
+	// a new message ends the plan
+	mustFinish(t, ctx, c.ID, run, &harness.RunResult{Messages: []harness.Message{{Role: harness.RoleTool, ToolCallID: "c2", Content: `"ok"`}}}, nil)
+	run, _ = Send(ctx, nil, SendParams{ConversationID: c.ID, Message: "thanks"})
+	if l := mustLoad(t, ctx, c.ID, run); len(l.Grants.Calls) != 0 {
+		t.Fatalf("calls %v after a message", l.Grants.Calls)
+	}
+}
+
 func TestSteering(t *testing.T) {
 	ctx := setup(t)
 	c, run := mustStart(t, ctx, nil, StartParams{Message: "deploy"})

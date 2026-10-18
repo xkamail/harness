@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -114,7 +115,7 @@ type turn struct {
 
 // runTurn answers every call. At most one interaction or held confirmation
 // per turn; later ones are skipped. force runs every call regardless of tier.
-func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall, granted []string, force bool, cfg RunConfig) (*turn, error) {
+func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall, granted *Grants, force bool, cfg RunConfig) (*turn, error) {
 	c := a.c
 	t := &turn{outs: make([]string, len(calls))}
 	for _, call := range calls {
@@ -257,14 +258,13 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 	return t, nil
 }
 
-// granted: no grant covers a destructive call.
-func (a *Agent) granted(tools []string, call ToolCall) bool {
-	for _, name := range tools {
-		if name == call.Name {
-			return a.Tier(call) != TierDestructive
-		}
+// granted uses up a matching plan step, which covers any tier; a tool grant never covers a destructive call.
+func (a *Agent) granted(g *Grants, call ToolCall) bool {
+	if i := slices.Index(g.Calls, CallKey(call)); i >= 0 {
+		g.Calls = slices.Delete(g.Calls, i, i+1)
+		return true
 	}
-	return false
+	return slices.Contains(g.Tools, call.Name) && a.Tier(call) != TierDestructive
 }
 
 // planError reports a plan step naming an unknown tool; "" otherwise.
@@ -400,6 +400,24 @@ func callHandler(ctx context.Context, name string, h Handler, args json.RawMessa
 		}
 	}()
 	return h(ctx, args)
+}
+
+// PlanCalls returns the CallKeys of a plan call's steps, for Grants.Calls once it is approved.
+func PlanCalls(plan ToolCall) []string {
+	var p struct {
+		Steps []struct {
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		} `json:"steps"`
+	}
+	if json.Unmarshal(plan.Arguments, &p) != nil {
+		return nil
+	}
+	keys := make([]string, len(p.Steps))
+	for i, st := range p.Steps {
+		keys[i] = CallKey(ToolCall{Name: st.Tool, Arguments: st.Arguments})
+	}
+	return keys
 }
 
 // CallKey hashes name and key-order-independent args; approved plan steps match calls by it.

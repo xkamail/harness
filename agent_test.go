@@ -370,3 +370,37 @@ func TestCompact(t *testing.T) {
 		t.Fatal("kept a cut-off summary")
 	}
 }
+
+func TestRunApprovedPlan(t *testing.T) {
+	a, ran := testAgent(t)
+	plan := map[string]any{"steps": []map[string]any{
+		{"summary": "restart a", "tool": "restart", "arguments": map[string]string{"svc": "a"}},
+		{"summary": "wipe", "tool": "wipe", "arguments": map[string]string{}},
+	}}
+	res, err := a.Run(context.Background(), harnesstest.NewFakeModel(harnesstest.Call("p1", harness.ToolPlan, plan)), harness.RunConfig{History: []harness.Message{user("fix it")}})
+	if err != nil || res.Interaction == nil || len(res.Messages) != 1 {
+		t.Fatalf("plan run: %v %+v", err, res.Messages)
+	}
+
+	// approved: every step runs once at any tier; anything else is still held
+	history := append([]harness.Message{user("fix it")}, res.Messages...)
+	m := harnesstest.NewFakeModel(
+		harnesstest.Call("c1", "restart", map[string]string{"svc": "a"}),
+		harnesstest.Call("c2", "wipe", map[string]string{}),
+		harnesstest.Call("c3", "restart", map[string]string{"svc": "a"}),
+	)
+	res, err = a.Run(context.Background(), m, harness.RunConfig{
+		History:  history,
+		Decision: &harness.DecisionPayload{ApprovalID: "p1", Decision: harness.DecisionApprove},
+		Grants:   harness.Grants{Calls: harness.PlanCalls(*res.Interaction)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Messages[0].ToolCallID != "p1" || !strings.Contains(res.Messages[0].Content, "approved") {
+		t.Fatalf("plan answer %+v", res.Messages[0])
+	}
+	if ran.Load() != 2 || res.Confirm == nil || res.Confirm.ID != "c3" {
+		t.Fatalf("ran %d confirm %+v", ran.Load(), res.Confirm)
+	}
+}

@@ -291,9 +291,9 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 		res.Messages = append(res.Messages, ms...)
 	}
 
-	granted := slices.Clone(cfg.Grants.Tools)
+	granted := Grants{Tools: slices.Clone(cfg.Grants.Tools), Calls: slices.Clone(cfg.Grants.Calls)}
 	if cfg.Decision != nil {
-		t, msg, err := a.decide(ctx, msgs, granted, cfg)
+		t, msg, err := a.decide(ctx, msgs, cfg)
 		if err != nil {
 			return res, err
 		}
@@ -319,7 +319,7 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 			}
 			add(in...)
 			if revoke {
-				granted = nil
+				granted = Grants{}
 			}
 		}
 		id := MessageID(runID, res.Iterations+1)
@@ -370,13 +370,16 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 			return res, ErrMaxIterations
 		}
 		// Record the assistant turn only with its tool results, so Messages never holds unanswered calls but the held one.
-		t, err := a.runTurn(ctx, id, msg.ToolCalls, granted, false, cfg)
+		t, err := a.runTurn(ctx, id, msg.ToolCalls, &granted, false, cfg)
 		if err != nil {
 			return res, err
 		}
 		add(msg)
 		for i, call := range msg.ToolCalls {
-			if t.confirm == nil || call.ID != t.confirm.ID {
+			// the decision answers a held call or a plan
+			held := t.confirm != nil && call.ID == t.confirm.ID
+			plan := t.interaction != nil && t.interaction.Name == ToolPlan && call.ID == t.interaction.ID
+			if !held && !plan {
 				add(Message{Role: RoleTool, Content: t.outs[i], ToolCallID: call.ID})
 			}
 		}
@@ -396,8 +399,8 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 	return res, ErrMaxIterations
 }
 
-// decide returns a nil message when the latest assistant turn has no unanswered call with that id (e.g. a plan's).
-func (a *Agent) decide(ctx context.Context, msgs []Message, granted []string, cfg RunConfig) (*turn, *Message, error) {
+// decide returns a nil message when the latest assistant turn has no unanswered call with that id.
+func (a *Agent) decide(ctx context.Context, msgs []Message, cfg RunConfig) (*turn, *Message, error) {
 	d := cfg.Decision
 	var (
 		turnID string
@@ -420,21 +423,26 @@ func (a *Agent) decide(ctx context.Context, msgs []Message, granted []string, cf
 	if call == nil {
 		return nil, nil, nil
 	}
-	if d.Decision == DecisionReject {
+	// a plan only answers: its steps run as the model calls them, under Grants.Calls
+	if d.Decision == DecisionReject || call.Name == ToolPlan {
+		ok := d.Decision != DecisionReject
 		if cfg.OnToolStart != nil {
 			cfg.OnToolStart(turnID, *call, a.Display(*call))
 		}
 		if cfg.OnToolDone != nil {
-			cfg.OnToolDone(*call, ToolOutcome{})
+			cfg.OnToolDone(*call, ToolOutcome{OK: ok})
 		}
 		out := map[string]string{"status": "rejected", "message": "The user rejected this call. Do not retry it unless they ask."}
+		if ok {
+			out = map[string]string{"status": "approved", "message": "The user approved the plan. Call each step exactly as listed."}
+		}
 		if d.Note != "" {
 			out["note"] = d.Note
 		}
 		b, _ := json.Marshal(out)
 		return &turn{}, &Message{Role: RoleTool, Content: string(b), ToolCallID: call.ID}, nil
 	}
-	t, err := a.runTurn(ctx, turnID, []ToolCall{*call}, granted, true, cfg)
+	t, err := a.runTurn(ctx, turnID, []ToolCall{*call}, nil, true, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
