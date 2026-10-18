@@ -6,6 +6,7 @@
 package openaiharness
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -76,12 +78,38 @@ func New(apiKey, model string, opts ...Option) *Client {
 		o(c)
 	}
 	// retry policy belongs to callers, via harness.IsRetryable
-	ro := []option.RequestOption{option.WithAPIKey(apiKey), option.WithMaxRetries(0)}
+	ro := []option.RequestOption{option.WithAPIKey(apiKey), option.WithMaxRetries(0), option.WithMiddleware(wrapStringError)}
 	if c.baseURL != "" {
 		ro = append(ro, option.WithBaseURL(c.baseURL))
 	}
 	c.client = openai.NewClient(ro...)
 	return c
+}
+
+// wrapStringError rewrites an error body of {"error": "text"}, as Ollama and
+// some proxies send, into OpenAI's {"error": {"message": "text"}}; the SDK
+// fails to parse the string form and loses the status.
+func wrapStringError(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+	res, err := next(req)
+	if err != nil || res.StatusCode < 400 {
+		return res, err
+	}
+	body, err := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	var e struct {
+		Error json.RawMessage `json:"error"`
+	}
+	var text string
+	if json.Unmarshal(body, &e) == nil && json.Unmarshal(e.Error, &text) == nil {
+		body, _ = json.Marshal(map[string]any{"error": map[string]string{"message": text}})
+		res.ContentLength = int64(len(body))
+		res.Header.Del("Content-Length")
+	}
+	res.Body = io.NopCloser(bytes.NewReader(body))
+	return res, nil
 }
 
 // Error is a failed call. StatusCode is the HTTP status, or 0 for a network
