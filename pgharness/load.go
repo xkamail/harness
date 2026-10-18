@@ -42,11 +42,35 @@ func Load(ctx context.Context, conversationID, runID string) (*Loaded, error) {
 		return nil, ErrSuperseded
 	}
 
+	b, msgValues, err := loadHistory(ctx, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	if err := attachParts(ctx, conversationID, b.msgs, defaultAttachmentBudget); err != nil {
+		return nil, err
+	}
+
+	rctx := harness.WithValues(ctx, msgValues)
+	rctx = harness.WithValues(rctx, c.Context) // the conversation's own keys always win
+	rctx = context.WithValue(rctx, conversationKey{}, c)
+	return &Loaded{
+		Conversation: *c,
+		Ctx:          rctx,
+		History:      b.msgs,
+		Grants:       harness.Grants{Tools: b.grants},
+		Decision:     b.decision,
+		Inbox:        newInbox(conversationID),
+	}, nil
+}
+
+// loadHistory folds the conversation's whole log, returning the builder and
+// the last user message's Values.
+func loadHistory(ctx context.Context, conversationID string) (*historyBuilder, harness.Values, error) {
 	var (
 		b         historyBuilder
 		msgValues harness.Values
 	)
-	err = pgctx.Iter(ctx, func(scan pgsql.Scanner) error {
+	err := pgctx.Iter(ctx, func(scan pgsql.Scanner) error {
 		var ev harness.Event
 		if err := scanEvent(scan, &ev); err != nil {
 			return err
@@ -66,30 +90,20 @@ func Load(ctx context.Context, conversationID, runID string) (*Loaded, error) {
 		order by seq
 	`, conversationID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	b.finish()
-	if err := attachParts(ctx, conversationID, b.msgs, defaultAttachmentBudget); err != nil {
-		return nil, err
-	}
-
-	rctx := harness.WithValues(ctx, msgValues)
-	rctx = harness.WithValues(rctx, c.Context) // the conversation's own keys always win
-	rctx = context.WithValue(rctx, conversationKey{}, c)
-	return &Loaded{
-		Conversation: *c,
-		Ctx:          rctx,
-		History:      b.msgs,
-		Grants:       harness.Grants{Tools: b.grants},
-		Decision:     b.decision,
-		Inbox:        newInbox(conversationID),
-	}, nil
+	return &b, msgValues, nil
 }
 
 // historyBuilder folds events into model history, grants and the pending
 // decision.
 type historyBuilder struct {
 	msgs []harness.Message
+	// seqs[i] is the seq of the event msgs[i] came from.
+	seqs []int64
+	// last is the seq of the last event added.
+	last int64
 	// unresolved are calls of the last assistant message without a result.
 	unresolved []string
 	results    map[string]bool
@@ -104,21 +118,22 @@ func (b *historyBuilder) add(ev harness.Event) error {
 	if b.results == nil {
 		b.results, b.groups = map[string]bool{}, map[string][]string{}
 	}
+	b.last = ev.Seq
 	switch ev.Type {
 	case harness.EventUserMessage:
 		var p UserPayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			return err
 		}
-		b.supersede()
+		b.supersede(ev.Seq)
 		b.open, b.grants, b.decision = "", nil, nil
-		b.msgs = append(b.msgs, harness.Message{Role: harness.RoleUser, Content: p.Text, Parts: slices.Clone(p.Parts)})
+		b.push(ev.Seq, harness.Message{Role: harness.RoleUser, Content: p.Text, Parts: slices.Clone(p.Parts)})
 	case harness.EventMessage:
 		var p harness.MessagePayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			return err
 		}
-		b.msgs = append(b.msgs, harness.Message{ID: ev.MessageID, Role: harness.RoleAssistant, Content: p.Text})
+		b.push(ev.Seq, harness.Message{ID: ev.MessageID, Role: harness.RoleAssistant, Content: p.Text})
 	case harness.EventToolCall:
 		var p ToolCallPayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
@@ -129,8 +144,8 @@ func (b *historyBuilder) add(ev harness.Event) error {
 		if n := len(b.msgs); n > 0 && ev.MessageID != "" && b.msgs[n-1].Role == harness.RoleAssistant && b.msgs[n-1].ID == ev.MessageID {
 			b.msgs[n-1].ToolCalls = append(b.msgs[n-1].ToolCalls, call)
 		} else {
-			b.supersede()
-			b.msgs = append(b.msgs, harness.Message{ID: ev.MessageID, Role: harness.RoleAssistant, ToolCalls: []harness.ToolCall{call}})
+			b.supersede(ev.Seq)
+			b.push(ev.Seq, harness.Message{ID: ev.MessageID, Role: harness.RoleAssistant, ToolCalls: []harness.ToolCall{call}})
 		}
 		b.unresolved = append(b.unresolved, call.ID)
 	case harness.EventToolResult:
@@ -138,7 +153,7 @@ func (b *historyBuilder) add(ev harness.Event) error {
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			return err
 		}
-		b.msgs = append(b.msgs, harness.Message{Role: harness.RoleTool, Content: p.Content, ToolCallID: ev.ToolCallID})
+		b.push(ev.Seq, harness.Message{Role: harness.RoleTool, Content: p.Content, ToolCallID: ev.ToolCallID})
 		b.results[ev.ToolCallID] = true
 		b.unresolved = slices.DeleteFunc(b.unresolved, func(id string) bool { return id == ev.ToolCallID })
 	case harness.EventConfirm:
@@ -168,17 +183,34 @@ func (b *historyBuilder) add(ev harness.Event) error {
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			return err
 		}
-		b.msgs = []harness.Message{{Role: harness.RoleSystem, Content: "Summary of the conversation so far:\n" + p.Text}}
-		b.unresolved = nil
+		// keep the tail from the user message at seq Through; without one,
+		// the summary replaces everything
+		keep := len(b.msgs)
+		for i, m := range b.msgs {
+			if p.Through > 0 && m.Role == harness.RoleUser && b.seqs[i] == p.Through {
+				keep = i
+				break
+			}
+		}
+		if keep == len(b.msgs) {
+			b.unresolved = nil
+		}
+		b.msgs = append([]harness.Message{{Role: harness.RoleSystem, Content: "Summary of the conversation so far:\n" + p.Text}}, b.msgs[keep:]...)
+		b.seqs = append([]int64{ev.Seq}, b.seqs[keep:]...)
 	}
 	return nil
 }
 
+func (b *historyBuilder) push(seq int64, m harness.Message) {
+	b.msgs = append(b.msgs, m)
+	b.seqs = append(b.seqs, seq)
+}
+
 // supersede answers every unresolved call, so history never holds a call
 // without a result before the next message.
-func (b *historyBuilder) supersede() {
+func (b *historyBuilder) supersede(seq int64) {
 	for _, id := range b.unresolved {
-		b.msgs = append(b.msgs, harness.Message{Role: harness.RoleTool, Content: supersededResult, ToolCallID: id})
+		b.push(seq, harness.Message{Role: harness.RoleTool, Content: supersededResult, ToolCallID: id})
 		b.results[id] = true
 	}
 	b.unresolved = nil

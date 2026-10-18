@@ -1,8 +1,10 @@
 package pgharness
 
 import (
+	"container/list"
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/acoshift/pgsql"
 	"github.com/acoshift/pgsql/pgctx"
@@ -119,13 +121,17 @@ func attachParts(ctx context.Context, conversationID string, history []harness.M
 			}
 			data := s.data
 			if data == nil && blobs != nil {
-				data, err = blobs.Get(ctx, blobPrefix(conversationID)+s.ID)
-				if errors.Is(err, ErrBlobNotFound) {
-					*p = harness.OmittedPart(s.Attachment)
-					continue
-				}
-				if err != nil {
-					return err
+				var ok bool
+				if data, ok = blobCache.get(s.SHA256); !ok {
+					data, err = blobs.Get(ctx, blobPrefix(conversationID)+s.ID)
+					if errors.Is(err, ErrBlobNotFound) {
+						*p = harness.OmittedPart(s.Attachment)
+						continue
+					}
+					if err != nil {
+						return err
+					}
+					blobCache.add(s.SHA256, data)
 				}
 			}
 			if data == nil {
@@ -138,4 +144,58 @@ func attachParts(ctx context.Context, conversationID string, history []harness.M
 		newest = false
 	}
 	return nil
+}
+
+// blobCache keeps bytes read from Blobs by sha256, so a conversation's next
+// run does not download the same file again. A blob the store has since
+// dropped still loads while it is cached.
+var blobCache = newByteLRU(64 << 20)
+
+// byteLRU is a least-recently-used cache bounded by total bytes.
+type byteLRU struct {
+	mu    sync.Mutex
+	max   int
+	size  int
+	order *list.List
+	items map[string]*list.Element
+}
+
+type lruEntry struct {
+	key  string
+	data []byte
+}
+
+func newByteLRU(max int) *byteLRU {
+	return &byteLRU{max: max, order: list.New(), items: make(map[string]*list.Element)}
+}
+
+func (c *byteLRU) get(key string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.items[key]
+	if !ok {
+		return nil, false
+	}
+	c.order.MoveToFront(e)
+	return e.Value.(*lruEntry).data, true
+}
+
+func (c *byteLRU) add(key string, data []byte) {
+	if len(data) > c.max {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.items[key]; ok {
+		return
+	}
+	c.items[key] = c.order.PushFront(&lruEntry{key: key, data: data})
+	c.size += len(data)
+	for c.size > c.max {
+		e := c.order.Back()
+		c.order.Remove(e)
+		old := e.Value.(*lruEntry)
+		delete(c.items, old.key)
+		c.size -= len(old.data)
+	}
 }

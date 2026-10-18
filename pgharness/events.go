@@ -51,7 +51,7 @@ type InteractionPayload struct {
 }
 
 // SummaryPayload is session.summary: Text replaces every message before
-// seq Through.
+// the user.message at seq Through, which starts the tail kept verbatim.
 type SummaryPayload struct {
 	Text    string `json:"text"`
 	Through int64  `json:"through"`

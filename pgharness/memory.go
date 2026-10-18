@@ -21,6 +21,7 @@ import (
 const (
 	ToolRemember = "remember"
 	ToolForget   = "forget"
+	ToolRecall   = "recall"
 )
 
 // MemoryKind is what a memory records.
@@ -57,7 +58,7 @@ type MemoryOptions struct {
 	// Max is how many memories are injected per run; zero means 30.
 	Max int
 	// MaxStored caps an owner's memories; zero means Max, so the agent sees,
-	// updates and dedupes every one.
+	// updates and dedupes every one. Above Max, recall searches the rest.
 	MaxStored int
 	// MaxContent caps a memory in characters; zero means 300.
 	MaxContent int
@@ -65,7 +66,8 @@ type MemoryOptions struct {
 
 // WithMemory returns a with the remember and forget tools and with the
 // owner's visible memories injected after the system prompt on every run.
-// Runs need the ctx from Load.
+// When MaxStored is over Max it also adds recall, a search over the visible
+// memories. Runs need the ctx from Load.
 func WithMemory(a harness.Agent, opt MemoryOptions) harness.Agent {
 	if opt.Max <= 0 {
 		opt.Max = 30
@@ -109,8 +111,8 @@ func WithMemory(a harness.Agent, opt MemoryOptions) harness.Agent {
 		return sb.String(), nil
 	}
 
-	return harness.AddTools(a,
-		harness.Tool{
+	tools := []harness.Tool{
+		{
 			Name: ToolRemember,
 			Description: "Call to save, or with id to update, a short durable memory about the user: " +
 				"a preference, a fact about what they work on, or an incident and its fix. " +
@@ -128,26 +130,29 @@ func WithMemory(a harness.Agent, opt MemoryOptions) harness.Agent {
 			Label:   "Saving a memory",
 			Handler: rememberHandler(opt),
 		},
-		harness.Tool{
+		{
 			Name:        ToolForget,
 			Description: "Call to delete a memory by id when it is wrong or the user asks.",
 			Schema:      json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`),
 			Label:       "Forgetting a memory",
 			Handler:     forgetHandler,
 		},
-	)
+	}
+	if opt.MaxStored > opt.Max {
+		tools = append(tools, harness.Tool{
+			Name: ToolRecall,
+			Description: "Call to search the user's saved memories by words or phrases; " +
+				"only the most recent are listed above, so search before saying you do not know or saving a duplicate.",
+			Schema:  json.RawMessage(`{"type":"object","properties":{"query":{"type":"string","minLength":1}},"required":["query"]}`),
+			Label:   "Searching memories",
+			Handler: recallHandler,
+		})
+	}
+	return harness.AddTools(a, tools...)
 }
 
 func visibleMemories(ctx context.Context, c *Conversation, limit int) ([]Memory, error) {
-	out := make([]Memory, 0)
-	err := pgctx.Iter(ctx, func(scan pgsql.Scanner) error {
-		var m Memory
-		if err := scan(&m.ID, &m.Kind, &m.Content, pgsql.JSON(&m.Context), &m.UpdatedAt); err != nil {
-			return err
-		}
-		out = append(out, m)
-		return nil
-	}, `
+	return queryMemories(ctx, `
 		select
 			id,
 			kind,
@@ -160,7 +165,61 @@ func visibleMemories(ctx context.Context, c *Conversation, limit int) ([]Memory,
 		order by updated_at desc
 		limit $3
 	`, c.OwnerID, pgsql.JSON(c.Context), limit)
+}
+
+// recallLimit caps the memories one recall returns.
+const recallLimit = 10
+
+// recallMinSimilarity is the least pg_trgm word_similarity a memory needs to
+// match a recall query.
+const recallMinSimilarity = 0.3
+
+func recallMemories(ctx context.Context, c *Conversation, query string) ([]Memory, error) {
+	return queryMemories(ctx, `
+		select
+			id,
+			kind,
+			content,
+			context,
+			updated_at
+		from harness.memories
+		where owner_id = $1
+			and $2::jsonb @> context
+			and word_similarity($3, content) >= $4
+		order by word_similarity($3, content) desc, updated_at desc
+		limit $5
+	`, c.OwnerID, pgsql.JSON(c.Context), query, recallMinSimilarity, recallLimit)
+}
+
+func queryMemories(ctx context.Context, q string, args ...any) ([]Memory, error) {
+	out := make([]Memory, 0)
+	err := pgctx.Iter(ctx, func(scan pgsql.Scanner) error {
+		var m Memory
+		if err := scan(&m.ID, &m.Kind, &m.Content, pgsql.JSON(&m.Context), &m.UpdatedAt); err != nil {
+			return err
+		}
+		out = append(out, m)
+		return nil
+	}, q, args...)
 	return out, err
+}
+
+func recallHandler(ctx context.Context, args json.RawMessage) (any, error) {
+	var in struct {
+		Query string `json:"query"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return nil, err
+	}
+	c := ConversationFrom(ctx)
+	if c == nil {
+		return nil, errNoConversation
+	}
+	in.Query = strings.TrimSpace(in.Query)
+	if in.Query == "" {
+		return nil, errors.New("query is empty")
+	}
+	return recallMemories(ctx, c, in.Query)
 }
 
 var errNoConversation = errors.New("pgharness: memory tools need the ctx from Load")

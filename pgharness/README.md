@@ -6,8 +6,7 @@ conversation row, attachments, memory and live streaming. The core
 that survives restarts, scales across stateless instances and streams to any
 transport.
 
-> Status: implemented, except compaction in `Finish`, the attachment LRU and
-> `recall` (see Not yet). Tested against Postgres with
+> Status: implemented (see Not yet for pgvector). Tested against Postgres with
 > `TEST_DB_URL=postgres://…/%s go test ./pgharness`.
 
 ## Principles
@@ -293,9 +292,20 @@ Publishing happens after commit.
 When the run ends idle with queued messages its inbox never read, `Finish`
 delivers them and starts the next run, returning its id to kick.
 
-Compaction will run here too: when `res.ContextTokens` passes the agent's
-threshold, `harness.Compact` writes a `session.summary` for the next run.
-`Load` already honours `session.summary`.
+### Compact
+
+```go
+func Compact(ctx context.Context, bus Bus, a *harness.Agent, m harness.Model, conversationID string) error
+```
+
+Call it after `Finish`, outside any transaction: it calls the model. Once
+the conversation's `context_tokens` reach `a.Compaction.Threshold`,
+`harness.Compact` summarizes everything before the last `KeepTail` user
+turns and a `session.summary` is appended, its `through` the seq of the
+first `user.message` kept verbatim. `Load` then starts history with the
+summary followed by that tail. A no-op when the agent has no `Compaction`,
+nothing is new to cut, or another summary landed while the model ran. In a
+durable run, make it a step.
 
 ## Live streaming
 
@@ -371,7 +381,7 @@ type Blobs interface {
   loads as `OmittedPart`; the conversation carries on.
 - Models get bytes (data URIs), never signed URLs: bytes keep the prompt
   cache stable and work with every endpoint.
-- `Load` keeps a small in-process LRU by `sha256`, so a conversation's next
+- `Load` keeps an in-process LRU (64 MiB) by `sha256` for `Blobs` bytes, so a conversation's next
   run does not download the same file again.
 - Only images and PDFs (`harness.ValidateParts`). A project that accepts text
   files turns them into text parts before calling `Start` or `Send`.
@@ -398,8 +408,9 @@ to inject the visible memories, newest first, after the system prompt.
 - Memories are context, not instructions; live tool results win.
 - `MaxStored` defaults to `Max`: mccloud stores 100 but injects 30, so the
   agent cannot see, update or dedupe the other 70.
-- Search (`recall`, trigram plus pgvector) waits for the first agent with
-  more memories than fit in the prompt.
+- `recall` is added when `MaxStored` is over `Max`: a pg_trgm
+  `word_similarity` search (≥ 0.3, top 10) over the visible memories.
+  Migration 0002 creates the `pg_trgm` extension.
 
 ## Housekeeping
 
@@ -458,10 +469,8 @@ Keep the `ai_*` tables read-only for a while after the copy, for rollback.
 
 ## Not yet
 
-- **Compaction in `Finish`**: waits for `harness.Compact`.
-- **Attachment LRU** by `sha256` in `Load`: only pays off with a remote
-  `Blobs`.
-- **`recall`** search over memories.
+- **pgvector** for `recall`: needs an embedding model; trigram covers
+  keyword and Thai substring matches.
 
 ## Open questions
 

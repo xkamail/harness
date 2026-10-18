@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,10 +18,10 @@ import (
 	"github.com/rs/xid"
 
 	"github.com/xkamail/harness"
+	"github.com/xkamail/harness/harnesstest"
 )
 
-// setup returns a ctx on a fresh, migrated database named after the test.
-// TEST_DB_URL is a format string whose %s is the database name.
+// setup returns a ctx on a fresh migrated database; TEST_DB_URL's %s is the database name.
 func setup(t *testing.T) context.Context {
 	t.Helper()
 	tmpl := os.Getenv("TEST_DB_URL")
@@ -302,6 +303,67 @@ func TestHistoryBuilder(t *testing.T) {
 	}
 }
 
+func TestSummaryKeepsTail(t *testing.T) {
+	var b historyBuilder
+	evs := []harness.Event{
+		{Seq: 1, Type: harness.EventUserMessage, Payload: json.RawMessage(`{"text":"one"}`)},
+		{Seq: 2, Type: harness.EventMessage, Payload: json.RawMessage(`{"text":"a1"}`)},
+		{Seq: 3, Type: harness.EventUserMessage, Payload: json.RawMessage(`{"text":"two"}`)},
+		{Seq: 4, Type: harness.EventToolCall, ToolCallID: "c1", Payload: json.RawMessage(`{"name":"now"}`)},
+		{Seq: 5, Type: harness.EventSummary, Payload: json.RawMessage(`{"text":"earlier","through":3}`)},
+		{Seq: 6, Type: harness.EventUserMessage, Payload: json.RawMessage(`{"text":"three"}`)},
+	}
+	for _, ev := range evs {
+		if err := b.add(ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the tail's open call still gets its synthetic result
+	if roles(b.msgs) != "suatu" || b.msgs[1].Content != "two" || fmt.Sprint(b.seqs) != "[5 3 4 6 6]" {
+		t.Fatalf("history %s %v", roles(b.msgs), b.seqs)
+	}
+}
+
+func TestCompact(t *testing.T) {
+	ctx := setup(t)
+	a := harness.MustCompile(harness.Agent{Name: "test", Compaction: &harness.CompactionConfig{Threshold: 100, KeepTail: 1}})
+	reply := func(id, run, text string, tokens int64) {
+		t.Helper()
+		mustFinish(t, ctx, id, run, &harness.RunResult{ContextTokens: tokens, Messages: []harness.Message{{ID: run + ".1", Role: harness.RoleAssistant, Content: text}}}, nil)
+	}
+	c, run := mustStart(t, ctx, nil, StartParams{Message: "one"})
+	reply(c.ID, run, "a1", 50)
+	if err := Compact(ctx, nil, a, harnesstest.NewFakeModel(), c.ID); err != nil {
+		t.Fatalf("below threshold: %v", err)
+	}
+
+	run, err := Send(ctx, nil, SendParams{ConversationID: c.ID, Message: "two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply(c.ID, run, "a2", 200)
+	m := harnesstest.NewFakeModel(harnesstest.Text("they said one"))
+	if err := Compact(ctx, nil, a, m, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Requests) != 1 || !strings.Contains(m.Requests[0].Messages[1].Content, "User: one") || strings.Contains(m.Requests[0].Messages[1].Content, "two") {
+		t.Fatalf("summarized %+v", m.Requests)
+	}
+	// nothing new to cut: no model call
+	if err := Compact(ctx, nil, a, harnesstest.NewFakeModel(), c.ID); err != nil {
+		t.Fatalf("second compact: %v", err)
+	}
+
+	run, err = Send(ctx, nil, SendParams{ConversationID: c.ID, Message: "three"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := mustLoad(t, ctx, c.ID, run)
+	if roles(l.History) != "suau" || !strings.Contains(l.History[0].Content, "they said one") || l.History[1].Content != "two" {
+		t.Fatalf("history %s %+v", roles(l.History), l.History)
+	}
+}
+
 func TestSteering(t *testing.T) {
 	ctx := setup(t)
 	c, run := mustStart(t, ctx, nil, StartParams{Message: "deploy"})
@@ -478,6 +540,10 @@ func TestBlobsAndDeleteContext(t *testing.T) {
 		t.Fatal("blob not loaded")
 	}
 	clear(blobs)
+	if l := mustLoad(t, ctx, gone.ID, run); !bytes.Equal(l.History[0].Parts[0].Data, png) {
+		t.Fatal("blob not served from the cache")
+	}
+	blobCache = newByteLRU(64 << 20)
 	if l := mustLoad(t, ctx, gone.ID, run); l.History[0].Parts[0].Type != harness.PartText {
 		t.Fatal("missing blob not omitted")
 	}
@@ -603,9 +669,8 @@ func TestFollow(t *testing.T) {
 		t.Fatalf("got %d %s", ev.Seq, ev.Type)
 	}
 
-	// Finish publishes nothing (nil bus): a lost publish. The follower stays
-	// behind until the next persisted event signals it, then catches up in
-	// order and once.
+	// nil bus simulates a lost publish: the follower catches up, in order and once,
+	// when the next persisted event signals it.
 	_, err := Finish(ctx, nil, testAgent, c.ID, run, &harness.RunResult{Messages: []harness.Message{{ID: run + ".1", Role: harness.RoleAssistant, Content: "hello"}}}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -637,5 +702,48 @@ func TestFollow(t *testing.T) {
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("follow ended with %v", err)
+	}
+}
+
+func TestRecall(t *testing.T) {
+	ctx := setup(t)
+	if a := WithMemory(harness.Agent{Name: "mem"}, MemoryOptions{Max: 2}); len(a.Tools) != 2 {
+		t.Fatalf("recall added while every memory fits: %d tools", len(a.Tools))
+	}
+	a := WithMemory(harness.Agent{Name: "mem"}, MemoryOptions{Max: 1, MaxStored: 10})
+	recall := a.Tools[2].Handler
+	c, run := mustStart(t, ctx, nil, StartParams{Context: harness.Values{"serverId": "s1"}, Message: "hi"})
+	_, err := pgctx.Exec(ctx, `
+		insert into harness.memories (id, owner_id, kind, content, context)
+		values
+			('m1', 'u1', 'preference', 'deploys to staging before production', '{}'),
+			('m2', 'u1', 'fact', 'ผู้ใช้ชอบคำตอบสั้นๆ', '{}'),
+			('m3', 'u1', 'fact', 'staging on another server', '{"serverId":"s2"}'),
+			('m4', 'u2', 'fact', 'someone else uses staging', '{}')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := mustLoad(t, ctx, c.ID, run)
+	ids := func(q string) string {
+		t.Helper()
+		out, err := recall(l.Ctx, json.RawMessage(`{"query":`+strconv.Quote(q)+`}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s []string
+		for _, m := range out.([]Memory) {
+			s = append(s, m.ID)
+		}
+		return strings.Join(s, ",")
+	}
+	if got := ids("staging"); got != "m1" {
+		t.Fatalf("staging: %q", got)
+	}
+	if got := ids("คำตอบสั้น"); got != "m2" {
+		t.Fatalf("thai: %q", got)
+	}
+	if got := ids("kubernetes"); got != "" {
+		t.Fatalf("unrelated: %q", got)
 	}
 }
