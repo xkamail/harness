@@ -14,10 +14,8 @@ import (
 //go:embed schema/*.sql
 var schemaFS embed.FS
 
-// Migrate creates or upgrades the harness schema. It runs every embedded
-// schema/NNNN_*.sql not yet recorded in harness.schema_version, in order,
-// each in its own transaction. Concurrent callers serialize on an advisory
-// lock, so every instance may call it at startup.
+// Migrate applies embedded schema/NNNN_*.sql files not in harness.schema_version, each in its own tx.
+// An advisory lock makes it safe for every instance to call at startup.
 func Migrate(ctx context.Context) error {
 	files, err := fs.Glob(schemaFS, "schema/*.sql")
 	if err != nil {

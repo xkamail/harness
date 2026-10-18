@@ -11,9 +11,8 @@ import (
 	"github.com/xkamail/harness"
 )
 
-// FailOrphanedRuns marks as error every conversation running for at least
-// idle whose run alive reports dead, such as one DBOS no longer knows. Call
-// it after launch with idle 0, then periodically.
+// FailOrphanedRuns errors conversations running for >= idle whose run alive reports dead (e.g. unknown to DBOS).
+// Call it with idle 0 after launch, then periodically.
 func FailOrphanedRuns(ctx context.Context, bus Bus, idle time.Duration, alive func(runID string) bool) error {
 	type run struct{ conversationID, runID string }
 	var runs []run
@@ -60,10 +59,8 @@ func FailOrphanedRuns(ctx context.Context, bus Bus, idle time.Duration, alive fu
 	return nil
 }
 
-// DeleteContext deletes every conversation whose context contains v, with
-// its events, attachments and blobs, and every memory whose context
-// contains v. Call it where the project deletes the subject, such as
-// DeleteContext(ctx, harness.Values{"serverId": id}).
+// DeleteContext deletes conversations (with events, attachments, blobs) and memories whose context contains v,
+// e.g. DeleteContext(ctx, harness.Values{"serverId": id}) when the project deletes that subject.
 func DeleteContext(ctx context.Context, v harness.Values) error {
 	if len(v) == 0 {
 		return errors.New("pgharness: DeleteContext needs a non-empty context")
@@ -95,8 +92,7 @@ func DeleteContext(ctx context.Context, v harness.Values) error {
 	if err != nil {
 		return err
 	}
-	// blobs after commit: a failed delete leaves orphans for retention, never
-	// rows pointing at missing bytes
+	// blobs after commit: a failure leaves orphans, never rows pointing at missing bytes
 	if blobs := blobsFrom(ctx); blobs != nil {
 		for _, id := range ids {
 			if err := blobs.DeletePrefix(ctx, blobPrefix(id)); err != nil {

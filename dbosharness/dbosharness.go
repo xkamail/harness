@@ -1,25 +1,6 @@
-// Package dbosharness makes a harness run durable with DBOS: every model
-// call, tool call, inbox read and context read is a checkpointed step, so a
-// run interrupted by a crash or restart resumes without repeating them.
-//
-// The project still owns the workflow function, its registration, the
-// conversation store, run_id fencing and stop signals:
-//
-//	func runWorkflow(dctx dbos.DBOSContext, in runInput) (struct{}, error) {
-//		wctx := dbos.From(dctx, rctx)
-//		res, err := agents[in.Agent].Run(rctx,
-//			dbosharness.Model(wctx, models.Get(in.Model), dbosharness.WithOnUsage(record)),
-//			harness.RunConfig{
-//				History: history,
-//				Tools:   dbosharness.Tools(wctx),
-//				Inbox:   dbosharness.Inbox(wctx, readQueued),
-//			})
-//		...
-//	}
-//
-// Rules for workflow code: read nothing outside a step (history, context,
-// config), and pass the chosen model in the workflow input, so a replay
-// sees exactly what the first execution saw.
+// Package dbosharness makes a harness run durable with DBOS: model calls, tool
+// calls, inbox and context reads are checkpointed steps, so a resumed run never repeats them.
+// Workflow code must read nothing outside a step and take the model from the workflow input, so replay sees what the first run saw.
 package dbosharness
 
 import (
@@ -33,7 +14,6 @@ import (
 	"github.com/xkamail/harness"
 )
 
-// Option configures the step wrappers.
 type Option func(*options)
 
 type options struct {
@@ -44,28 +24,23 @@ type options struct {
 	onStepErr func(ctx context.Context, err error)
 }
 
-// WithRetry sets attempts and linear backoff for retryable model errors
-// (harness.IsRetryable) inside the step; the default is 3 and 2s. Before
-// each retry of a call that already streamed text it calls
-// Request.OnReset, which Run turns into RunConfig.OnReset(messageID).
+// WithRetry sets in-step retries for harness.IsRetryable errors (default 3, 2s linear backoff).
+// A retry after streamed text calls Request.OnReset first.
 func WithRetry(attempts int, backoff time.Duration) Option {
 	return func(o *options) { o.attempts, o.backoff = attempts, backoff }
 }
 
-// WithOnUsage is called inside the model step with the call's exact usage,
-// so it runs once per call even across replays.
+// WithOnUsage runs inside the model step, so once per call even across replays.
 func WithOnUsage(f func(ctx context.Context, m harness.Model, u harness.Usage)) Option {
 	return func(o *options) { o.onUsage = f }
 }
 
-// WithOnCalls hears every model turn's tool calls, on first execution and on
-// replay alike, such as to rebuild grant state.
+// WithOnCalls sees each turn's tool calls on first execution and on replay (e.g. to rebuild grants).
 func WithOnCalls(f func(calls []harness.ToolCall)) Option {
 	return func(o *options) { o.onCalls = f }
 }
 
-// WithOnStepError hears a step's final error, such as to park the run when
-// the process is shutting down.
+// WithOnStepError sees a step's final error (e.g. to park the run on shutdown).
 func WithOnStepError(f func(ctx context.Context, err error)) Option {
 	return func(o *options) { o.onStepErr = f }
 }
@@ -84,11 +59,8 @@ func (o options) stepErr(ctx context.Context, err error) {
 	}
 }
 
-// Model wraps m so each Message is one step named "model". The checkpoint
-// holds the neutral response, with tool arguments stored as strings.
-//
-// Message runs on wctx, not the ctx Run passes, so build wctx from the run's
-// ctx (dbos.From(dctx, rctx)).
+// Model wraps m so each Message is one step named "model".
+// Message runs on wctx, not Run's ctx, so build wctx with dbos.From(dctx, rctx).
 func Model(wctx dbos.DBOSContext, m harness.Model, opts ...Option) harness.Model {
 	return &stepModel{wctx: wctx, m: m, o: newOptions(opts)}
 }
@@ -102,8 +74,7 @@ type stepModel struct {
 func (m *stepModel) Provider() string { return m.m.Provider() }
 func (m *stepModel) Model() string    { return m.m.Model() }
 
-// modelStep is the checkpointed form of a response. Arguments are strings:
-// a json.RawMessage checkpoint would be re-encoded on replay.
+// Arguments are strings: a json.RawMessage checkpoint would be re-encoded on replay.
 type modelStep struct {
 	Content   string        `json:"content"`
 	Calls     []callStep    `json:"calls"`
@@ -174,9 +145,8 @@ func (m *stepModel) Message(_ context.Context, req harness.Request) (*harness.Re
 	return &harness.Response{Message: msg, Usage: out.Usage, Reasoning: out.Reasoning}, nil
 }
 
-// Tools returns a ToolRunner that runs each call as its own concurrent step
-// named "tool"; dbos.Go assigns step ids in call order, so a replay matches
-// every call to its result.
+// Tools runs each call as its own concurrent "tool" step; dbos.Go assigns step
+// ids in call order, so replay matches each call to its result.
 func Tools(wctx dbos.DBOSContext, opts ...Option) harness.ToolRunner {
 	o := newOptions(opts)
 	return func(_ context.Context, fns []func(context.Context) (string, error)) ([]string, error) {
@@ -208,8 +178,7 @@ type inboxStep struct {
 	Revoke bool              `json:"revoke"`
 }
 
-// Inbox wraps read so each check is a step and a replay injects exactly the
-// messages the first execution did.
+// Inbox wraps read as a step so replay injects exactly the original messages.
 func Inbox(wctx dbos.DBOSContext, read harness.Inbox) harness.Inbox {
 	return func(context.Context) ([]harness.Message, bool, error) {
 		out, err := dbos.RunAsStep(wctx, func(ctx context.Context) (inboxStep, error) {
@@ -220,7 +189,6 @@ func Inbox(wctx dbos.DBOSContext, read harness.Inbox) harness.Inbox {
 	}
 }
 
-// Context wraps an Agent.Context func as a step.
 func Context(wctx dbos.DBOSContext, fn func(ctx context.Context) (string, error)) func(ctx context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		return dbos.RunAsStep(wctx, func(ctx context.Context) (string, error) {
@@ -229,19 +197,15 @@ func Context(wctx dbos.DBOSContext, fn func(ctx context.Context) (string, error)
 	}
 }
 
-// OrphanSweeper fails runs a deploy stranded: DBOS recovers only workflows
-// of its own application version.
+// OrphanSweeper exists because DBOS recovers only workflows of its own application version.
 type OrphanSweeper interface {
-	// RunningIdle returns conversation and run ids marked running and idle
-	// for at least idle.
 	RunningIdle(ctx context.Context, idle time.Duration) (conversationIDs, runIDs []string, err error)
-	// Fail marks the run failed when it is still the conversation's run.
+	// Fail must be a no-op if runID is no longer the conversation's run.
 	Fail(ctx context.Context, conversationID, runID string) error
 }
 
-// FailOrphanedRuns fails every run s reports whose workflow DBOS no longer
-// knows or has ended. Call it after dbos.Launch with idle 0, then
-// periodically.
+// FailOrphanedRuns fails runs whose workflow is unknown, ended, or pending under another build.
+// Call it after dbos.Launch with idle 0, then periodically.
 func FailOrphanedRuns(ctx context.Context, dc dbos.DBOSContext, s OrphanSweeper, idle time.Duration) error {
 	convs, runs, err := s.RunningIdle(ctx, idle)
 	if err != nil || len(runs) == 0 {

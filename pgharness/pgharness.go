@@ -1,10 +1,5 @@
-// Package pgharness is Postgres storage and lifecycle for harness
-// conversations: the event log, the conversation row, attachments, memory
-// and live streaming. See README.md for the design.
-//
-// Every function reads the database from ctx (pgctx) and joins the caller's
-// transaction when there is one. Events are published to the Bus only after
-// the transaction that wrote them commits.
+// Package pgharness is Postgres storage and lifecycle for harness conversations (see README.md).
+// Functions use the db from ctx (pgctx), join the caller's tx, and publish to the Bus only after commit.
 package pgharness
 
 import (
@@ -19,9 +14,7 @@ import (
 	"github.com/xkamail/harness"
 )
 
-// Errors.
 var (
-	// ErrNotFound: the conversation does not exist.
 	ErrNotFound = errors.New("pgharness: conversation not found")
 	// ErrBusy: a decision sent while a run is running.
 	ErrBusy = errors.New("pgharness: conversation is busy")
@@ -29,31 +22,26 @@ var (
 	ErrQueueFull = errors.New("pgharness: queue is full")
 	// ErrContext: Start without one of its Require keys.
 	ErrContext = errors.New("pgharness: conversation context missing a key")
-	// ErrSuperseded: Load for a run that is no longer the conversation's
-	// current one (stopped, failed or replaced).
+	// ErrSuperseded: Load for a run that is no longer current (stopped, failed or replaced).
 	ErrSuperseded = errors.New("pgharness: run is superseded")
 	// ErrEmpty: Send or Start with neither text nor parts.
 	ErrEmpty = errors.New("pgharness: empty message")
 )
 
-// maxQueued caps the user.queued messages waiting for one busy run.
+// maxQueued caps user.queued messages waiting on one busy run.
 const maxQueued = 10
 
 // Policy is how Start finds the conversation it writes to.
 type Policy int
 
 const (
-	// PolicyNew starts a new conversation on every Start.
 	PolicyNew Policy = iota
-	// PolicyPerContext resumes the owner's conversation with the same agent
-	// and context.
+	// PolicyPerContext resumes the owner's conversation with the same agent and context.
 	PolicyPerContext
-	// PolicyShared resumes the one conversation for the agent and context,
-	// whoever started it, such as a support thread.
+	// PolicyShared resumes the agent+context conversation regardless of owner (e.g. a support thread).
 	PolicyShared
 )
 
-// Conversation is one row of harness.conversations.
 type Conversation struct {
 	ID      string `json:"id"`
 	Agent   string `json:"agent"`
@@ -100,13 +88,12 @@ func scanConversation(scan pgsql.Scanner, c *Conversation) error {
 	)
 }
 
-// Get returns the conversation with id. The caller checks the owner.
+// Get does not check the owner; the caller must.
 func Get(ctx context.Context, id string) (*Conversation, error) {
 	return getConversation(ctx, id, false)
 }
 
-// getConversation reads the row, locking it for update when lock is set;
-// every writer locks first, which serializes seq allocation.
+// getConversation with lock takes FOR UPDATE; every writer locks first, which serializes seq allocation.
 func getConversation(ctx context.Context, id string, lock bool) (*Conversation, error) {
 	q := `select ` + conversationColumns + ` from harness.conversations where id = $1`
 	if lock {
@@ -125,8 +112,7 @@ func getConversation(ctx context.Context, id string, lock bool) (*Conversation, 
 
 type conversationKey struct{}
 
-// ConversationFrom returns the conversation of the run ctx belongs to, as
-// Load put it there.
+// ConversationFrom returns the conversation Load put in a run's ctx.
 func ConversationFrom(ctx context.Context) *Conversation {
 	c, _ := ctx.Value(conversationKey{}).(*Conversation)
 	return c
@@ -134,8 +120,7 @@ func ConversationFrom(ctx context.Context) *Conversation {
 
 type blobsKey struct{}
 
-// WithBlobs returns ctx whose attachments' bytes go to b instead of the
-// attachments row.
+// WithBlobs stores attachment bytes in b instead of the attachments row.
 func WithBlobs(ctx context.Context, b Blobs) context.Context {
 	return context.WithValue(ctx, blobsKey{}, b)
 }

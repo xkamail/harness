@@ -14,8 +14,7 @@ import (
 	"github.com/xkamail/harness"
 )
 
-// StartParams opens a conversation, or resumes one under Policy, with a
-// first message.
+// StartParams opens, or resumes under Policy, a conversation with a first message.
 type StartParams struct {
 	Agent   string
 	OwnerID string
@@ -28,13 +27,12 @@ type StartParams struct {
 	Message string
 	// Parts are validated with harness.ValidateParts.
 	Parts []harness.Part
-	// Values are per-message values, such as the page the user is on.
+	// Values are per-message (e.g. the user's current page).
 	Values harness.Values
 }
 
-// Start opens or resumes a conversation and sends p's message to it, as
-// Send does. It returns the run id to kick, or "" when the resumed
-// conversation was busy and the message was queued.
+// Start opens or resumes a conversation and Sends p's message. It returns the run id to kick,
+// or "" when the resumed conversation was busy and the message was queued.
 func Start(ctx context.Context, bus Bus, p StartParams) (*Conversation, string, error) {
 	for _, k := range p.Require {
 		if p.Context[k] == "" {
@@ -126,20 +124,15 @@ type SendParams struct {
 	Message        string
 	Parts          []harness.Part
 	Values         harness.Values
-	// Decision answers the open agent.confirm or agent.plan; Message and
-	// Parts are ignored with it (its Note carries any text).
+	// Decision answers the open agent.confirm/agent.plan; Message and Parts are then ignored (use its Note).
 	Decision *harness.DecisionPayload
 }
 
-// Send appends p to the conversation and returns the run id to kick, or ""
-// when the message was queued for the busy run. The caller checks the
-// sender may write to the conversation, and that a decision's ByID may
-// approve.
+// Send returns the run id to kick, or "" if queued. The caller checks write access and a decision's ByID.
 //
-//	running:            message → user.queued; decision → ErrBusy
-//	idle, error:        message → user.message and a run; decision → ErrStaleApproval
-//	awaiting_input:     message → user.message and a run (the open approval lapses);
-//	                    decision on the open approval → user.decision and a run
+//	running:        message → user.queued; decision → ErrBusy
+//	idle, error:    message → user.message + run; decision → ErrStaleApproval
+//	awaiting_input: message → user.message + run (open approval lapses); decision on it → user.decision + run
 func Send(ctx context.Context, bus Bus, p SendParams) (string, error) {
 	var runID string
 	err := pgctx.RunInTx(ctx, func(ctx context.Context) error {
@@ -211,10 +204,8 @@ func send(ctx context.Context, bus Bus, c *Conversation, p SendParams) (string, 
 	return startRun(ctx, bus, c.ID)
 }
 
-// Stop ends the conversation's running run and returns its id so the
-// project cancels it (the run's Finish becomes a no-op). Messages the run
-// never read are delivered for the next run. Stopping a conversation that
-// is not running returns "".
+// Stop ends the running run and returns its id to cancel (its Finish becomes a no-op), or "" if not running.
+// Queued messages the run never read are delivered for the next run.
 func Stop(ctx context.Context, bus Bus, conversationID string) (string, error) {
 	var runID string
 	err := pgctx.RunInTx(ctx, func(ctx context.Context) error {

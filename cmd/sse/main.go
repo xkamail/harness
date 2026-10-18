@@ -1,20 +1,9 @@
-// Command sse serves one shared conversation to a web UI over Server-Sent
-// Events: streamed text, live tool progress, confirmations and steering.
+// Command sse serves one shared conversation to a web UI over Server-Sent Events.
 //
-//	OPENAI_API_KEY=sk-... go run ./cmd/sse -model gpt-5-mini
-//	go run ./cmd/sse -fake
-//	open http://localhost:8080 (two tabs share the conversation)
+//	OPENAI_API_KEY=sk-... go run ./cmd/sse -model gpt-5-mini   (or -fake)
 //
-// The wiring is what a real project does with its own database:
-//
-//   - every run event is appended to the conversation's log, persisted ones
-//     get a Seq; ephemeral ones (deltas, tool_start, tool_done) only fan out
-//   - GET /api/events replays the log after Last-Event-ID, then streams live,
-//     so a reconnecting EventSource resumes where it stopped
-//   - POST /api/messages starts a run, or, while one is running, queues the
-//     message as user.queued for the run's Inbox to pick up: steering
-//   - POST /api/decision answers the held call of agent.confirm and starts
-//     the run that applies it; a decision on any other call is stale
+// Persisted events get a Seq; ephemeral ones (deltas, tool_start, tool_done) only fan out.
+// POST /api/messages during a run queues user.queued for the run's Inbox (steering).
 package main
 
 import (
@@ -105,9 +94,7 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, mux))
 }
 
-// convo is one conversation: its event log, live subscribers and run state.
-// A project keeps the log and state in its database and fans out through a
-// bus; here both live in memory behind mu.
+// convo keeps in memory what a project keeps in its database and bus.
 type convo struct {
 	model harness.Model
 
@@ -129,8 +116,7 @@ type queuedMsg struct {
 	text string
 }
 
-// userPayload is user.message and user.queued. QueuedSeq ties a delivered
-// message to the user.queued it was sent as.
+// QueuedSeq ties a delivered message to the user.queued it was sent as.
 type userPayload struct {
 	Text      string `json:"text"`
 	QueuedSeq int64  `json:"queuedSeq,omitempty"`
@@ -144,9 +130,8 @@ func newEvent(typ harness.EventType, runID string, payload any) harness.Event {
 	return harness.Event{Type: typ, RunID: runID, Payload: b, CreatedAt: time.Now()}
 }
 
-// emitLocked persists ev unless it is ephemeral and sends it to every
-// subscriber. A subscriber too slow to take it is dropped; its EventSource
-// reconnects and catches up from Last-Event-ID.
+// emitLocked drops a slow subscriber; its EventSource reconnects and catches up
+// from Last-Event-ID.
 func (c *convo) emitLocked(ev harness.Event) {
 	if !ev.Type.Ephemeral() {
 		ev.Seq = int64(len(c.events)) + 1
@@ -168,9 +153,8 @@ func (c *convo) emit(ev harness.Event) {
 	c.emitLocked(ev)
 }
 
-// serveEvents replays the log after Last-Event-ID (or ?after=) and then
-// streams live events. The backlog is taken and the subscription made under
-// one lock, so no event is missed or sent twice.
+// serveEvents replays after Last-Event-ID (or ?after=), then streams live; backlog
+// and subscription share one lock so no event is missed or sent twice.
 func (c *convo) serveEvents(w http.ResponseWriter, r *http.Request) {
 	after, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
 	if after == 0 {
@@ -296,8 +280,7 @@ func (c *convo) postDecision(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// deliverQueuedLocked moves messages queued too late for the last run's
-// Inbox into history.
+// deliverQueuedLocked moves messages queued too late for the last run's Inbox into history.
 func (c *convo) deliverQueuedLocked() {
 	for _, q := range c.queued {
 		c.emitLocked(newEvent(harness.EventUserMessage, "", userPayload{Text: q.text, QueuedSeq: q.seq}))
@@ -381,8 +364,7 @@ func (c *convo) run(cfg harness.RunConfig) {
 	}
 }
 
-// inbox hands the run the messages queued since its last call. Any of them
-// is a new instruction, so it revokes the run's grants.
+// inbox revokes the run's grants: any queued message is a new instruction.
 func (c *convo) inbox(ctx context.Context) ([]harness.Message, bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -398,9 +380,8 @@ func (c *convo) inbox(ctx context.Context) ([]harness.Message, bool, error) {
 	return msgs, true, nil
 }
 
-// persistLocked turns the run's messages into persisted events. The live
-// tool_start and tool_done a client already saw are replaced, on reload, by
-// these tool_call and tool_result events under the same ToolCallID.
+// persistLocked: on reload, these tool_call/tool_result events replace the live
+// tool_start/tool_done under the same ToolCallID.
 func (c *convo) persistLocked(runID string, res *harness.RunResult) {
 	for _, m := range res.Messages {
 		switch {

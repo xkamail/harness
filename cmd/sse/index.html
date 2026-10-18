@@ -132,8 +132,7 @@ document.getElementById("form").onsubmit = (e) => {
   input.value = "";
 };
 
-// EventSource reconnects by itself and sends Last-Event-ID, so the server
-// resumes after the last persisted event this page saw.
+// EventSource reconnects with Last-Event-ID, so the server resumes where this page left off.
 const es = new EventSource("/api/events");
 es.onmessage = (m) => onEvent(JSON.parse(m.data));
 es.onerror = () => { statusEl.textContent = "reconnecting…"; };

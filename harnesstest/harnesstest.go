@@ -10,8 +10,7 @@ import (
 	"github.com/xkamail/harness"
 )
 
-// FakeModel replies from a script, one Response per call, and records every
-// Request.
+// FakeModel replies with one scripted Response per call and records every Request.
 type FakeModel struct {
 	mu       sync.Mutex
 	script   []harness.Response
@@ -20,12 +19,10 @@ type FakeModel struct {
 
 var _ harness.Model = (*FakeModel)(nil)
 
-// NewFakeModel returns a model that replies with script in order.
 func NewFakeModel(script ...harness.Response) *FakeModel {
 	return &FakeModel{script: script}
 }
 
-// Text is a plain-text reply.
 func Text(s string) harness.Response {
 	return harness.Response{Message: harness.Message{Role: harness.RoleAssistant, Content: s}}
 }

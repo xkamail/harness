@@ -1,8 +1,5 @@
-// Package openaiharness is the harness.Model adapter for any
-// OpenAI-compatible Chat Completions endpoint: OpenAI, DeepSeek, OpenRouter,
-// Ollama, vLLM, and the compatibility endpoints of other providers.
-//
-// Provider differences live here as Options, never in projects.
+// Package openaiharness is the harness.Model adapter for OpenAI-compatible Chat
+// Completions endpoints; provider differences live here as Dialects, never in projects.
 package openaiharness
 
 import (
@@ -25,7 +22,6 @@ import (
 	"github.com/xkamail/harness"
 )
 
-// Client is a harness.Model over one endpoint and model.
 type Client struct {
 	provider string
 	model    string
@@ -39,39 +35,31 @@ var _ harness.Model = (*Client)(nil)
 
 // Dialect is how an endpoint departs from OpenAI's.
 type Dialect struct {
-	// ReasoningField is the non-standard delta field carrying reasoning,
-	// such as "reasoning_content" on DeepSeek; empty reads none.
+	// ReasoningField is the non-standard reasoning delta field (DeepSeek: "reasoning_content"); empty reads none.
 	ReasoningField string
-	// NoReasoningEffort drops Request.ReasoningEffort for endpoints that
-	// reject it.
+	// NoReasoningEffort is for endpoints that reject reasoning_effort.
 	NoReasoningEffort bool
-	// LegacyMaxTokens sends Request.MaxOutputTokens as max_tokens, for
-	// endpoints that ignore max_completion_tokens.
+	// LegacyMaxTokens sends max_tokens instead of max_completion_tokens.
 	LegacyMaxTokens bool
 }
 
-// Dialects of known endpoints. Images go as image_url data URIs and PDFs as
-// file content parts (base64 file_data) on every dialect.
+// Every dialect sends images as image_url data URIs and PDFs as base64 file parts.
 var (
 	OpenAI   = Dialect{}
 	DeepSeek = Dialect{ReasoningField: "reasoning_content", NoReasoningEffort: true, LegacyMaxTokens: true}
 	Ollama   = Dialect{NoReasoningEffort: true}
 )
 
-// Option configures a Client.
 type Option func(*Client)
 
-// WithBaseURL points the client at another endpoint; the default is OpenAI.
+// WithBaseURL defaults to OpenAI.
 func WithBaseURL(url string) Option { return func(c *Client) { c.baseURL = url } }
 
-// WithProvider names the backend in RunResult and usage logs; the default is
-// "openai".
+// WithProvider names the backend in RunResult and usage logs (default "openai").
 func WithProvider(name string) Option { return func(c *Client) { c.provider = name } }
 
-// WithDialect sets the endpoint's differences.
 func WithDialect(d Dialect) Option { return func(c *Client) { c.dialect = d } }
 
-// New returns a client for model.
 func New(apiKey, model string, opts ...Option) *Client {
 	c := &Client{provider: "openai", model: model, apiKey: apiKey}
 	for _, o := range opts {
@@ -86,9 +74,8 @@ func New(apiKey, model string, opts ...Option) *Client {
 	return c
 }
 
-// wrapStringError rewrites an error body of {"error": "text"}, as Ollama and
-// some proxies send, into OpenAI's {"error": {"message": "text"}}; the SDK
-// fails to parse the string form and loses the status.
+// wrapStringError rewrites {"error": "text"} (Ollama, some proxies) into OpenAI's
+// {"error": {"message": "text"}}; the SDK fails on the string form and loses the status.
 func wrapStringError(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
 	res, err := next(req)
 	if err != nil || res.StatusCode < 400 {
@@ -112,8 +99,7 @@ func wrapStringError(req *http.Request, next option.MiddlewareNext) (*http.Respo
 	return res, nil
 }
 
-// Error is a failed call. StatusCode is the HTTP status, or 0 for a network
-// failure or a stream cut short.
+// Error's StatusCode is 0 for a network failure or a stream cut short.
 type Error struct {
 	StatusCode int
 	Message    string
@@ -134,15 +120,13 @@ func (e *Error) Retryable() bool {
 	return e.StatusCode == 0 || e.StatusCode == 429 || e.StatusCode >= 500
 }
 
-// Message makes one streaming Chat Completions call with no sampling
-// params.
+// Message makes one streaming call with no sampling params.
 func (c *Client) Message(ctx context.Context, req harness.Request) (*harness.Response, error) {
 	params := openai.ChatCompletionNewParams{
 		Model:    c.model,
 		Messages: make([]openai.ChatCompletionMessageParamUnion, 0, len(req.Messages)),
 	}
-	// Some providers (Anthropic's compatibility API) reject an empty tools
-	// list, so a tool-less call (title, summary) sends neither field.
+	// Some providers (Anthropic's compat API) reject an empty tools list, so send neither field.
 	if len(req.Tools) > 0 {
 		choice := "auto"
 		if req.NoToolCalls {
@@ -246,7 +230,6 @@ func (c *Client) Message(ctx context.Context, req harness.Request) (*harness.Res
 	return out, nil
 }
 
-// reasoningDelta reads the dialect's non-standard reasoning field.
 func (c *Client) reasoningDelta(d openai.ChatCompletionChunkChoiceDelta) string {
 	if c.dialect.ReasoningField == "" {
 		return ""

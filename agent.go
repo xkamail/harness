@@ -12,8 +12,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-// Interaction tool names owned by the harness. A run that ends on one of
-// them is waiting for a person.
+// Harness-owned interaction tools; a run ending on one waits for a person.
 const (
 	ToolPropose   = "propose"
 	ToolAskUser   = "ask_user"
@@ -21,49 +20,39 @@ const (
 	ToolLoadSkill = "load_skill"
 )
 
-// Agent is one feature's assistant: prompt, tools and policy. Write it as a
-// value, extend it with decorators (func(Agent) Agent), then Compile it once
-// at startup and Run the compiled *Agent.
+// Agent is a value; extend it with decorators (func(Agent) Agent), Compile once at startup, Run the result.
 type Agent struct {
-	// Name is unique within a project, such as "console" or
-	// "tournament.helper"; it is stored on the conversation.
+	// Unique within a project; stored on the conversation.
 	Name string
-	// PlatformPrompt opens the system prompt: what the product is and what
-	// is out of scope. Shared by a project's agents.
+	// Opens the system prompt; shared by a project's agents.
 	PlatformPrompt string
-	// SystemPrompt is the agent's frozen instructions. Keep it constant so
-	// the provider's prefix cache holds; live data goes in Context.
+	// Keep constant so the provider's prefix cache holds; live data goes in Context.
 	SystemPrompt string
-	// Context returns live context injected after the system prompt on every
-	// run. Empty text injects nothing.
+	// Injected after the system prompt every run; empty injects nothing.
 	Context func(ctx context.Context) (string, error)
 
 	Tools []Tool
-	// Skills adds load_skill when non-empty.
+	// Non-empty adds load_skill.
 	Skills []Skill
 
-	// ProposalSchema adds the propose tool. Empty means nothing to propose.
+	// Adds the propose tool when non-empty.
 	ProposalSchema json.RawMessage
-	// PrepareProposal checks a schema-valid proposal and may return
-	// completed arguments. Its error goes to the model verbatim.
+	// May return completed arguments; its error goes to the model verbatim.
 	PrepareProposal func(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 
-	// ReasoningEffort is sent on every model call; empty keeps the default.
+	// Empty keeps the provider default.
 	ReasoningEffort string
 
-	// MaxIterations caps model calls per run; zero means 8.
+	// Zero means 8.
 	MaxIterations int
-	// Timeout caps one run; zero means the caller's ctx decides.
+	// Zero means the caller's ctx decides.
 	Timeout time.Duration
-	// Compaction summarizes old history when the context grows; nil never
-	// compacts.
+	// Nil never compacts.
 	Compaction *CompactionConfig
 
 	c *compiled
 }
 
-// compiled is what Compile derives once: validated schemas, the registry,
-// the tool definitions sent to the model and the result cache.
 type compiled struct {
 	defs        []ToolDef
 	tools       map[string]*registered
@@ -108,14 +97,11 @@ const (
 	"additionalProperties": false
 }`
 
-	// stepLimitPrompt is the last call's instruction once a run is out of
-	// steps or budget.
+	// Sent on the last call once a run is out of steps or budget.
 	stepLimitPrompt = "You have reached this run's step limit and cannot call tools now. Reply in plain text: what you found, what you changed, and what is left. The user can send a message to continue."
 )
 
-// Compile validates a and compiles every schema. It fails on an empty name,
-// a duplicate or reserved tool name, a tool without a Handler, or a bad
-// schema.
+// Compile validates a and compiles every schema.
 func Compile(a Agent) (*Agent, error) {
 	if a.Name == "" {
 		return nil, errors.New("harness: agent name required")
@@ -219,7 +205,6 @@ func (c *compiled) register(t Tool) error {
 	return nil
 }
 
-// skillTool is load_skill over skills.
 func skillTool(skills []Skill) (Tool, error) {
 	bodies := make(map[string]string, len(skills))
 	topics := make([]string, 0, len(skills))
@@ -260,7 +245,6 @@ func skillTool(skills []Skill) (Tool, error) {
 	}, nil
 }
 
-// MustCompile is Compile that panics, for a project's agent registry.
 func MustCompile(a Agent) *Agent {
 	c, err := Compile(a)
 	if err != nil {
@@ -269,13 +253,8 @@ func MustCompile(a Agent) *Agent {
 	return c
 }
 
-// Run drives the tool-calling loop until the model replies in text, calls an
-// interaction tool, a gated call is held, a tool ends the turn, or a limit is
-// reached. On error the result is still non-nil and carries the usage and
-// messages accumulated so far, so spend is never lost.
-//
-// A held call gets no tool message in Messages: the Decision of the next run
-// answers it.
+// Run loops until a text reply, interaction tool, held call, EndsTurn tool or limit. On error
+// the result is still non-nil with usage and messages so far. A held call gets no tool message.
 func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, error) {
 	if a == nil || a.c == nil {
 		return &RunResult{}, ErrNotCompiled
@@ -390,8 +369,7 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 		if req.NoToolCalls {
 			return res, ErrMaxIterations
 		}
-		// Record the assistant turn only together with its tool results, so
-		// Messages never holds unanswered calls but the held one.
+		// Record the assistant turn only with its tool results, so Messages never holds unanswered calls but the held one.
 		t, err := a.runTurn(ctx, id, msg.ToolCalls, granted, false, cfg)
 		if err != nil {
 			return res, err
@@ -418,9 +396,7 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 	return res, ErrMaxIterations
 }
 
-// decide applies cfg.Decision to the held call it names, returning the
-// call's tool message. It returns a nil message when the latest assistant
-// turn holds no unanswered call with that id, such as a plan's.
+// decide returns a nil message when the latest assistant turn has no unanswered call with that id (e.g. a plan's).
 func (a *Agent) decide(ctx context.Context, msgs []Message, granted []string, cfg RunConfig) (*turn, *Message, error) {
 	d := cfg.Decision
 	var (
@@ -465,18 +441,16 @@ func (a *Agent) decide(ctx context.Context, msgs []Message, granted []string, cf
 	return t, &Message{Role: RoleTool, Content: t.outs[0], ToolCallID: call.ID}, nil
 }
 
-// spent reports whether u has used up b, or its deadline has passed.
 func (b Budget) spent(u Usage) bool {
 	return b.MaxInputTokens > 0 && u.InputTokens >= b.MaxInputTokens ||
 		b.MaxOutputTokens > 0 && u.OutputTokens >= b.MaxOutputTokens ||
 		!b.Deadline.IsZero() && !time.Now().Before(b.Deadline)
 }
 
-// Defs returns the tool definitions sent to the model, interaction tools
-// included.
+// Defs includes interaction tools.
 func (a *Agent) Defs() []ToolDef { return a.c.defs }
 
-// Tier returns call's tier; unknown tools are TierSafe.
+// Unknown tools are TierSafe.
 func (a *Agent) Tier(call ToolCall) Tier {
 	t, ok := a.c.tools[call.Name]
 	switch {
@@ -489,8 +463,7 @@ func (a *Agent) Tier(call ToolCall) Tier {
 	}
 }
 
-// Display returns how call is shown to the user. Interaction tools and
-// unknown names are Hidden.
+// Interaction tools and unknown names are Hidden.
 func (a *Agent) Display(call ToolCall) ToolDisplay {
 	t, ok := a.c.tools[call.Name]
 	if !ok {
@@ -509,7 +482,6 @@ func (a *Agent) Display(call ToolCall) ToolDisplay {
 	return d
 }
 
-// GrantGroup returns the tools sharing name's grant group, or nil.
 func (a *Agent) GrantGroup(name string) []string {
 	t, ok := a.c.tools[name]
 	if !ok || t.GrantGroup == "" {

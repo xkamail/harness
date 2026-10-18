@@ -9,36 +9,27 @@ import (
 	"github.com/xkamail/harness"
 )
 
-// Bus fans a conversation's events out to every instance. Delivery may be
-// lossy and out of order; Follow repairs both from the log.
+// Bus fans events out to every instance; delivery may be lossy and unordered, Follow repairs from the log.
 type Bus interface {
 	Publish(ctx context.Context, conversationID string, ev harness.Event) error
-	// Subscribe must be receiving when it returns, so a Publish right after
-	// it is delivered. stop closes the channel and is safe to call twice.
+	// Subscribe must be receiving on return; stop closes the channel and is idempotent.
 	Subscribe(ctx context.Context, conversationID string) (events <-chan harness.Event, stop func(), err error)
 }
 
-// ErrSubscriptionClosed is returned by Follow when the bus closed its
-// subscription; the client reconnects and resumes from its last seq.
+// ErrSubscriptionClosed: the bus closed the subscription; clients reconnect from their last seq.
 var ErrSubscriptionClosed = errors.New("pgharness: bus subscription closed")
 
-// FollowConfig tunes Follow; zero values use the defaults.
 type FollowConfig struct {
-	// PageSize is the catch-up page; zero means 200.
+	// PageSize is the catch-up page; default 200.
 	PageSize int
-	// Heal re-reads the log this often to repair a lost publish; zero means
-	// 15s.
+	// Heal re-reads the log this often to repair a lost publish; default 15s.
 	Heal time.Duration
-	// OnTick runs on every Heal tick after the catch-up, such as to send an
-	// SSE ": ping".
+	// OnTick runs every Heal tick after catch-up (e.g. an SSE ": ping").
 	OnTick func() error
 }
 
-// Follow yields every persisted event after afterSeq exactly once and in seq
-// order, then live events, until ctx ends or yield fails. It subscribes
-// before reading the log, yields stream.ready once the backlog is sent,
-// passes ephemeral events through as they come, and treats a persisted live
-// event, or a Lagged one, only as a signal to catch up from the log.
+// Follow yields persisted events after afterSeq exactly once in seq order, then stream.ready, then ephemeral events.
+// It subscribes before reading the log; a persisted or Lagged live event only triggers a catch-up from the log.
 func Follow(ctx context.Context, bus Bus, conversationID string, afterSeq int64, cfg FollowConfig, yield func(harness.Event) error) error {
 	if cfg.PageSize <= 0 {
 		cfg.PageSize = 200
@@ -112,9 +103,7 @@ func Follow(ctx context.Context, bus Bus, conversationID string, afterSeq int64,
 	}
 }
 
-// MemoryBus is an in-process Bus, for tests and single instances. A
-// subscriber that falls behind loses events and gets the next one marked
-// Lagged.
+// MemoryBus is an in-process Bus; a slow subscriber drops events and its next one is marked Lagged.
 type MemoryBus struct {
 	mu   sync.Mutex
 	subs map[string]map[*memorySub]struct{}
@@ -127,7 +116,6 @@ type memorySub struct {
 
 var _ Bus = (*MemoryBus)(nil)
 
-// NewMemoryBus returns an empty MemoryBus.
 func NewMemoryBus() *MemoryBus {
 	return &MemoryBus{subs: map[string]map[*memorySub]struct{}{}}
 }

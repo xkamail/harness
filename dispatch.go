@@ -23,7 +23,6 @@ const (
 	maxParallelCalls      = 8
 )
 
-// Tool results the harness writes itself.
 const (
 	resultSkipped  = "skipped: waiting for the user; call again after they reply"
 	resultBlockAck = `{"ok":true,"shown":"the card is shown to the user"}`
@@ -40,7 +39,7 @@ type cacheEntry struct {
 	expires time.Time
 }
 
-// resultCache holds CacheTTL results, shared by every run of the agent.
+// resultCache is shared by every run of the agent.
 type resultCache struct {
 	mu      sync.Mutex
 	entries map[string]cacheEntry
@@ -80,12 +79,11 @@ func (c *resultCache) put(key, out string, ttl time.Duration) {
 	c.entries[key] = cacheEntry{out: out, expires: now.Add(ttl)}
 }
 
-// callOut is what a ToolRunner fn returns, JSON-encoded, so a durable runner
-// checkpoints the outcome along with the result.
+// callOut is JSON-encoded so a durable runner checkpoints the outcome with the result.
 type callOut struct {
 	Out string `json:"out"`
 	OK  bool   `json:"ok"`
-	// Checked is a gated call whose Check passed; Preview is its result.
+	// Checked: a gated call's Check passed; Preview is its result.
 	Checked  bool            `json:"checked,omitempty"`
 	Preview  json.RawMessage `json:"preview,omitempty"`
 	Duration time.Duration   `json:"duration"`
@@ -104,9 +102,8 @@ func decodeOut(s string) callOut {
 	return o
 }
 
-// turn is the outcome of one model turn's calls.
 type turn struct {
-	// outs[i] answers calls[i]; the held call's is empty and not sent.
+	// outs[i] answers calls[i]; a held call's is empty and not sent.
 	outs        []string
 	interaction *ToolCall
 	confirm     *ToolCall
@@ -115,11 +112,8 @@ type turn struct {
 	endsTurn    bool
 }
 
-// runTurn answers every call in order: interaction calls are validated
-// synchronously, gated calls are matched against grants synchronously, and
-// the rest go to the runner. At most one interaction or held confirmation is
-// chosen per turn; later ones are skipped. force runs every call whatever
-// its tier, for an approved Decision.
+// runTurn answers every call. At most one interaction or held confirmation
+// per turn; later ones are skipped. force runs every call regardless of tier.
 func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall, granted []string, force bool, cfg RunConfig) (*turn, error) {
 	c := a.c
 	t := &turn{outs: make([]string, len(calls))}
@@ -191,8 +185,7 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 			case t.interaction != nil || t.confirm != nil:
 				answer(i, toolError(resultSkipped), false)
 			case validateArgs(c.tools[call.Name].schema, call.Arguments) != nil:
-				// let dispatch report the bad arguments rather than ask the
-				// user to confirm a call that cannot run
+				// let dispatch report bad args rather than confirm an unrunnable call
 				enqueue(i, false)
 			case a.granted(granted, call):
 				enqueue(i, false)
@@ -264,8 +257,7 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 	return t, nil
 }
 
-// granted reports whether a grant covers call; no grant covers a
-// destructive call.
+// granted: no grant covers a destructive call.
 func (a *Agent) granted(tools []string, call ToolCall) bool {
 	for _, name := range tools {
 		if name == call.Name {
@@ -275,8 +267,7 @@ func (a *Agent) granted(tools []string, call ToolCall) bool {
 	return false
 }
 
-// planError reports the first step of a schema-valid plan call naming a tool
-// that is not a registered tool; "" for any other call or a sound plan.
+// planError reports a plan step naming an unknown tool; "" otherwise.
 func (a *Agent) planError(call ToolCall) string {
 	if call.Name != ToolPlan {
 		return ""
@@ -297,10 +288,8 @@ func (a *Agent) planError(call ToolCall) string {
 	return ""
 }
 
-// prepareProposal runs PrepareProposal on a schema-valid propose call,
-// writing completed arguments back into call (it is the assistant message's
-// own call, so the history carries them too); "" for any other call, no hook
-// or an accepted proposal.
+// prepareProposal writes completed args back into call, which is the
+// assistant message's own, so history carries them; "" means accepted.
 func (a *Agent) prepareProposal(ctx context.Context, call *ToolCall) string {
 	if call.Name != ToolPropose || a.PrepareProposal == nil {
 		return ""
@@ -328,10 +317,8 @@ func runConcurrently(ctx context.Context, fns []func(context.Context) (string, e
 	return outs, errors.Join(errs...)
 }
 
-// dispatch runs call. Unknown tools, invalid arguments, handler errors,
-// panics and timeouts all become model-visible {"error": "..."} results so
-// the model can self-correct; the error is non-nil only when ctx itself is
-// done.
+// dispatch turns every failure into a model-visible {"error"} result; err is
+// non-nil only when ctx is done.
 func (c *compiled) dispatch(ctx context.Context, call ToolCall) (callOut, error) {
 	out, err := c.dispatchTool(ctx, call)
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -384,9 +371,7 @@ func (c *compiled) dispatchTool(ctx context.Context, call ToolCall) (string, err
 	return out, nil
 }
 
-// check runs call's Check. A passing check is Checked with its preview;
-// anything else is the model-visible error. The error is non-nil only when
-// ctx itself is done.
+// check runs call's Check; err is non-nil only when ctx is done.
 func (c *compiled) check(ctx context.Context, call ToolCall) (callOut, error) {
 	t := c.tools[call.Name]
 	cctx, cancel := context.WithTimeout(ctx, t.Timeout)
@@ -417,8 +402,7 @@ func callHandler(ctx context.Context, name string, h Handler, args json.RawMessa
 	return h(ctx, args)
 }
 
-// CallKey identifies a call by name and key-order-independent arguments; it
-// is how an approved plan's steps match calls.
+// CallKey hashes name and key-order-independent args; approved plan steps match calls by it.
 func CallKey(call ToolCall) string {
 	args := bytes.TrimSpace(call.Arguments)
 	if len(args) == 0 {
@@ -436,8 +420,7 @@ func CallKey(call ToolCall) string {
 	return call.Name + ":" + hex.EncodeToString(sum[:])
 }
 
-// capResult truncates s to at most limit bytes on a rune boundary and
-// appends a marker so the model knows the result is incomplete.
+// capResult truncates on a rune boundary and appends a marker for the model.
 func capResult(s string, limit int) string {
 	if len(s) <= limit {
 		return s

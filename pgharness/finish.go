@@ -15,13 +15,8 @@ const (
 	msgBusy  = "The model is busy right now. Try again in a moment."
 )
 
-// Finish writes run runID's outcome: its messages as events, the reason it
-// stopped and the conversation's next status. It is a no-op when runID is
-// no longer the conversation's running run (stopped or superseded).
-//
-// When the run ends idle with messages queued too late for its Inbox, Finish
-// delivers them and starts the next run; it returns that run's id to kick,
-// else "".
+// Finish persists run runID's messages, stop reason and next status; a no-op if runID is no longer running.
+// If the run ends idle with messages queued too late for its Inbox, it starts the next run and returns its id to kick.
 func Finish(ctx context.Context, bus Bus, a *harness.Agent, conversationID, runID string, res *harness.RunResult, runErr error) (string, error) {
 	var next string
 	// WithoutCancel so a stop cancelling the run's ctx cannot abort the write
@@ -39,8 +34,7 @@ func Finish(ctx context.Context, bus Bus, a *harness.Agent, conversationID, runI
 			return err
 		}
 
-		// Messages are complete call/result pairs, so they are kept even
-		// when the run failed: the progress and the spend are real.
+		// kept even on failure: messages are complete call/result pairs and the spend is real
 		var evs []harness.Event
 		names := map[string]string{}
 		for _, m := range res.Messages {

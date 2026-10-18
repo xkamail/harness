@@ -1,15 +1,6 @@
 package harness
 
-// Decorators are how an Agent is extended: plain functions from Agent to
-// Agent, applied before Compile.
-//
-//	agents := map[string]*harness.Agent{
-//		console.Name: harness.MustCompile(withTodos(withWatches(console.Agent()))),
-//	}
-
-// WrapHandlers returns a with every tool's Handler and Check passed through
-// wrap, such as to mask raw errors or log calls. It copies Tools, so a is
-// not modified.
+// WrapHandlers wraps every tool's Handler and Check; a.Tools is copied, not mutated.
 func WrapHandlers(a Agent, wrap func(t Tool, h Handler) Handler) Agent {
 	tools := make([]Tool, len(a.Tools))
 	copy(tools, a.Tools)
@@ -25,7 +16,7 @@ func WrapHandlers(a Agent, wrap func(t Tool, h Handler) Handler) Agent {
 	return a
 }
 
-// AddTools returns a with tools appended. It copies Tools.
+// AddTools appends to a copy of a.Tools.
 func AddTools(a Agent, tools ...Tool) Agent {
 	a.Tools = append(append([]Tool(nil), a.Tools...), tools...)
 	return a
