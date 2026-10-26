@@ -120,6 +120,23 @@ func (e *Error) Retryable() bool {
 	return e.StatusCode == 0 || e.StatusCode == 429 || e.StatusCode >= 500
 }
 
+// ContextLength reports a 413, or a 400 whose message says the prompt
+// overflowed the context window; providers word it differently.
+func (e *Error) ContextLength() bool {
+	switch e.StatusCode {
+	case 413:
+		return true
+	case 400:
+		msg := strings.ToLower(e.Message)
+		for _, s := range []string{"context_length", "context length", "maximum context", "prompt is too long", "input is too long"} {
+			if strings.Contains(msg, s) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Message makes one streaming call with no sampling params.
 func (c *Client) Message(ctx context.Context, req harness.Request) (*harness.Response, error) {
 	params := openai.ChatCompletionNewParams{
