@@ -202,6 +202,51 @@ func TestFinishError(t *testing.T) {
 	}
 }
 
+func TestRetry(t *testing.T) {
+	ctx := setup(t)
+	c, run := mustStart(t, ctx, nil, StartParams{Message: "hi"})
+	if again, err := Retry(ctx, nil, c.ID); err != nil || again != "" {
+		t.Fatalf("retried a running conversation %q %v", again, err)
+	}
+	Send(ctx, nil, SendParams{ConversationID: c.ID, Message: "queued"})
+	mustFinish(t, ctx, c.ID, run, &harness.RunResult{}, errors.New("boom"))
+
+	retry, err := Retry(ctx, nil, c.ID)
+	if err != nil || retry == "" || retry == run {
+		t.Fatalf("retry %q %v", retry, err)
+	}
+	if got := fmt.Sprint(eventTypes(t, ctx, c.ID, 0)); got != "[user.message session.status user.queued agent.error session.status user.message session.status]" {
+		t.Fatalf("events %s", got)
+	}
+	if l := mustLoad(t, ctx, c.ID, retry); roles(l.History) != "uu" {
+		t.Fatalf("history %s", roles(l.History))
+	}
+	if again, err := Retry(ctx, nil, c.ID); err != nil || again != "" {
+		t.Fatalf("retried a running conversation %q %v", again, err)
+	}
+	if _, err := Retry(ctx, nil, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing %v", err)
+	}
+
+	// a run that failed before running the approved call runs it on retry
+	c = confirmed(t, ctx)
+	if again, err := Retry(ctx, nil, c.ID); err != nil || again != "" {
+		t.Fatalf("retried an awaiting conversation %q %v", again, err)
+	}
+	run, err = Send(ctx, nil, SendParams{ConversationID: c.ID, Decision: &harness.DecisionPayload{ApprovalID: "c1", Decision: harness.DecisionApprove}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustFinish(t, ctx, c.ID, run, &harness.RunResult{}, errors.New("boom"))
+	retry, err = Retry(ctx, nil, c.ID)
+	if err != nil || retry == "" {
+		t.Fatalf("retry %q %v", retry, err)
+	}
+	if l := mustLoad(t, ctx, c.ID, retry); l.Decision == nil || l.Decision.ApprovalID != "c1" {
+		t.Fatalf("decision %+v", l.Decision)
+	}
+}
+
 // confirmed returns a conversation awaiting a decision on call c1.
 func confirmed(t *testing.T, ctx context.Context) *Conversation {
 	t.Helper()

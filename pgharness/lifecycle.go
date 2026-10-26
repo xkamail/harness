@@ -204,6 +204,25 @@ func send(ctx context.Context, bus Bus, c *Conversation, p SendParams) (string, 
 	return startRun(ctx, bus, c.ID)
 }
 
+// Retry re-runs a conversation whose last run ended in error and returns the new run id to kick,
+// or "" if the conversation is not in error. Queued messages the failed run never read come first.
+func Retry(ctx context.Context, bus Bus, conversationID string) (string, error) {
+	var runID string
+	err := pgctx.RunInTx(ctx, func(ctx context.Context) error {
+		runID = ""
+		c, err := getConversation(ctx, conversationID, true)
+		if err != nil || c.Status != harness.StatusError {
+			return err
+		}
+		if err := deliverPending(ctx, bus, c.ID, ""); err != nil {
+			return err
+		}
+		runID, err = startRun(ctx, bus, c.ID)
+		return err
+	})
+	return runID, err
+}
+
 // Stop ends the running run and returns its id to cancel (its Finish becomes a no-op), or "" if not running.
 // Queued messages the run never read are delivered for the next run.
 func Stop(ctx context.Context, bus Bus, conversationID string) (string, error) {

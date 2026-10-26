@@ -135,6 +135,7 @@ is on, ride the `user.message` payload and are layered on for that run only.
 func Start(ctx context.Context, bus Bus, p StartParams) (*Conversation, string, error) // runID to kick, or ""
 func Send(ctx context.Context, bus Bus, p SendParams) (string, error)                  // runID to kick, or "" when queued
 func Stop(ctx context.Context, bus Bus, conversationID string) (runID string, err error)
+func Retry(ctx context.Context, bus Bus, conversationID string) (runID string, err error) // re-run after error, or ""
 func Get(ctx context.Context, id string) (*Conversation, error)
 
 // Inside the run (workflow)
