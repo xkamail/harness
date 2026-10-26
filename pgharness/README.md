@@ -138,6 +138,7 @@ func Send(ctx context.Context, bus Bus, p SendParams) (string, error)           
 func Stop(ctx context.Context, bus Bus, conversationID string) (runID string, err error)
 func Retry(ctx context.Context, bus Bus, conversationID string) (runID string, err error) // re-run after error, or ""
 func Get(ctx context.Context, id string) (*Conversation, error)
+func List(ctx context.Context, ownerID, agent string, limit int) ([]Conversation, error) // newest updated_at first; skips deleted
 func SetTitle(ctx context.Context, conversationID, title string) error // e.g. an LLM-generated title
 func Delete(ctx context.Context, conversationID string) error                          // soft delete; reads as ErrNotFound after
 
