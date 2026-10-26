@@ -136,6 +136,7 @@ func Start(ctx context.Context, bus Bus, p StartParams) (*Conversation, string, 
 func Send(ctx context.Context, bus Bus, p SendParams) (string, error)                  // runID to kick, or "" when queued
 func Stop(ctx context.Context, bus Bus, conversationID string) (runID string, err error)
 func Get(ctx context.Context, id string) (*Conversation, error)
+func SetTitle(ctx context.Context, conversationID, title string) error // e.g. an LLM-generated title
 
 // Inside the run (workflow)
 func Load(ctx context.Context, conversationID, runID string) (*Loaded, error)
@@ -199,6 +200,10 @@ In one transaction: insert or lock the row, store attachments, append
 `user.message` and `session.status{running}`, set `run_id`. Returns the run
 id to kick, or `""` when the resumed conversation was busy and the message
 was queued.
+
+The title is the first message, whitespace collapsed and cut to 80 runes.
+`SetTitle` replaces it (normalized the same way) without touching
+`updated_at`.
 
 ### Send
 
@@ -465,6 +470,7 @@ to inject the visible memories, newest first, after the system prompt.
 | `api/ai/stream.go` catch-up | `Follow` |
 | `api/ai/attachment.go` byte budget | `Load` |
 | `api/ai/agent/memory.go` | `WithMemory` |
+| LLM-generated session title | `SetTitle` |
 | FK cascade on `servers` | `DeleteContext(ctx, Values{"serverId": id})` in server delete |
 
 Keep the `ai_*` tables read-only for a while after the copy, for rollback.

@@ -517,6 +517,26 @@ func TestPolicies(t *testing.T) {
 	}
 }
 
+func TestSetTitle(t *testing.T) {
+	ctx := setup(t)
+	c, _ := mustStart(t, ctx, nil, StartParams{Message: "hello"})
+	if err := SetTitle(ctx, c.ID, "  Server  restart\nplan "); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, ctx, c.ID); got.Title != "Server restart plan" || !got.UpdatedAt.Equal(c.UpdatedAt) {
+		t.Fatalf("title %q updated %v -> %v", got.Title, c.UpdatedAt, got.UpdatedAt)
+	}
+	if err := SetTitle(ctx, c.ID, strings.Repeat("x", 100)); err != nil {
+		t.Fatal(err)
+	}
+	if got := []rune(mustGet(t, ctx, c.ID).Title); len(got) != 80 || got[79] != '…' {
+		t.Fatalf("long title: %d runes", len(got))
+	}
+	if err := SetTitle(ctx, xid.New().String(), "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id: %v", err)
+	}
+}
+
 var png = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde")
 
 func TestAttachments(t *testing.T) {

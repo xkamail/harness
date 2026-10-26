@@ -118,6 +118,27 @@ func title(msg string) string {
 	return msg
 }
 
+// SetTitle replaces the title Start took from the first message, normalized the same way.
+// It leaves updated_at alone, so it neither reorders resumes nor delays FailOrphanedRuns.
+func SetTitle(ctx context.Context, conversationID, s string) error {
+	res, err := pgctx.Exec(ctx, `
+		update harness.conversations
+		set title = $2
+		where id = $1
+	`, conversationID, title(s))
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SendParams continues a conversation with a message or a decision.
 type SendParams struct {
 	ConversationID string
