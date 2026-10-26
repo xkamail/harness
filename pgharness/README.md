@@ -142,6 +142,7 @@ func Get(ctx context.Context, id string) (*Conversation, error)
 func List(ctx context.Context, ownerID, agent string, limit int) ([]Conversation, error) // newest updated_at first; skips deleted
 func SetTitle(ctx context.Context, conversationID, title string) error // e.g. an LLM-generated title
 func Delete(ctx context.Context, conversationID string) error                          // soft delete; reads as ErrNotFound after
+func Append(ctx context.Context, bus Bus, conversationID string, evs ...harness.Event) ([]harness.Event, error) // app-defined persisted events; Load skips them
 
 // Inside the run (workflow)
 func Load(ctx context.Context, conversationID, runID string) (*Loaded, error)

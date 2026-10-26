@@ -133,6 +133,23 @@ func appendEvents(ctx context.Context, bus Bus, conversationID string, evs ...ha
 	return out, nil
 }
 
+// Append persists app-defined events (agent.todos, session.title …) with the
+// next seqs and publishes them after commit; Load skips types it doesn't know,
+// so they must not reuse a type harness defines. It returns evs with Seq and
+// CreatedAt set.
+func Append(ctx context.Context, bus Bus, conversationID string, evs ...harness.Event) ([]harness.Event, error) {
+	var out []harness.Event
+	err := pgctx.RunInTx(ctx, func(ctx context.Context) error {
+		if _, err := getConversation(ctx, conversationID, true); err != nil {
+			return err
+		}
+		var err error
+		out, err = appendEvents(ctx, bus, conversationID, evs...)
+		return err
+	})
+	return out, err
+}
+
 const publishTimeout = 2 * time.Second
 
 // publish fans evs out. It is best effort: Follow repairs a lost publish
