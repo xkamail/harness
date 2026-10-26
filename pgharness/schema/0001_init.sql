@@ -12,7 +12,8 @@ create table if not exists harness.conversations (
     model          text        not null default '',
     context_tokens bigint      not null default 0,
     created_at     timestamptz not null default now(),
-    updated_at     timestamptz not null default now()
+    updated_at     timestamptz not null default now(),
+    deleted_at     timestamptz
 );
 create index if not exists conversations_owner_idx
     on harness.conversations (owner_id, agent, updated_at desc);
