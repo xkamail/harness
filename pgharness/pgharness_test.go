@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -623,6 +624,40 @@ func TestDelete(t *testing.T) {
 	}
 	if next, _ := mustStart(t, ctx, nil, p); next.ID == c.ID {
 		t.Fatal("start resumed a deleted conversation")
+	}
+}
+
+func TestList(t *testing.T) {
+	ctx := setup(t)
+	a, _ := mustStart(t, ctx, nil, StartParams{Message: "a"})
+	b, _ := mustStart(t, ctx, nil, StartParams{Message: "b"})
+	d, _ := mustStart(t, ctx, nil, StartParams{Message: "d"})
+	c, _ := mustStart(t, ctx, nil, StartParams{Message: "c"})
+	mustStart(t, ctx, nil, StartParams{Agent: "other", OwnerID: "u1", Message: "x"})
+	mustStart(t, ctx, nil, StartParams{Agent: "test", OwnerID: "u2", Message: "x"})
+	if err := Delete(ctx, d.ID); err != nil {
+		t.Fatal(err)
+	}
+	ids := func(limit int) []string {
+		got, err := List(ctx, "u1", "test", limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, x := range got {
+			out = append(out, x.ID)
+		}
+		return out
+	}
+	if got := ids(10); !slices.Equal(got, []string{c.ID, b.ID, a.ID}) {
+		t.Fatalf("list %v, want %v", got, []string{c.ID, b.ID, a.ID})
+	}
+	if got := ids(2); !slices.Equal(got, []string{c.ID, b.ID}) {
+		t.Fatalf("limit 2: %v", got)
+	}
+	got, err := List(ctx, "nobody", "test", 10)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("empty: %v %v", got, err)
 	}
 }
 

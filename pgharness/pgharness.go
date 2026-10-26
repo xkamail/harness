@@ -93,6 +93,28 @@ func Get(ctx context.Context, id string) (*Conversation, error) {
 	return getConversation(ctx, id, false)
 }
 
+// List returns an owner's conversations with agent, most recently updated first, skipping deleted ones.
+func List(ctx context.Context, ownerID, agent string, limit int) ([]Conversation, error) {
+	out := make([]Conversation, 0)
+	err := pgctx.Iter(ctx, func(scan pgsql.Scanner) error {
+		var c Conversation
+		if err := scanConversation(scan, &c); err != nil {
+			return err
+		}
+		out = append(out, c)
+		return nil
+	}, `
+		select `+conversationColumns+`
+		from harness.conversations
+		where owner_id = $1
+			and agent = $2
+			and deleted_at is null
+		order by updated_at desc
+		limit $3
+	`, ownerID, agent, limit)
+	return out, err
+}
+
 // getConversation with lock takes FOR UPDATE; every writer locks first, which serializes seq allocation.
 func getConversation(ctx context.Context, id string, lock bool) (*Conversation, error) {
 	q := `select ` + conversationColumns + ` from harness.conversations where id = $1 and deleted_at is null`
