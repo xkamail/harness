@@ -63,8 +63,24 @@ swap is mostly mechanical.
 | `MaxAttachments`, `MaxTextAttachmentSize`, `MaxBinaryAttachmentSize` | `harness.DefaultAttachmentLimits` |
 | `ValidateParts(parts)` | `ValidateParts(parts, lim)` |
 | `messager` interface (`pkg/tu/fakellm.go`) | `harness.Model` (same three methods) |
-| `AwaitingConfirmation` (7 uses) | no equivalent, by design (not a rename): rework the call sites around `RunResult.Stop == StopConfirm` / `RunResult.Confirm` |
+| `AwaitingConfirmation` (7 uses) | no equivalent, by design (see below) |
 | `Registry` / `NewRegistry` | gone (inside `Compile`); mccloud only uses it in `pkg/ai` tests |
+
+`AwaitingConfirmation` is not exported because harness has no placeholder
+result to compare against. mccloud answers a held call with that string, but
+harness writes no tool message for it: `RunResult.Messages` ends at the
+assistant turn's other results, and the held call comes back as
+`RunResult.Confirm` with `Stop == StopConfirm`. `OnToolDone` still fires for it
+with `ToolOutcome.Held` (`agent.tool_done` carries `held: true`). Rework the
+call sites:
+
+- `api/ai/run.go:649` (grant replay): held calls emit no tool-result event, so
+  drop the `AwaitingConfirmation` comparison. Keep the `{"error":"skipped:`
+  prefix check, because skipped calls are still answered with a tool error.
+- `pkg/ai/gate_test.go` and `api/ai/console*_test.go`: replace
+  `Content == AwaitingConfirmation` with `res.Stop == StopConfirm` plus
+  `res.Confirm.ID`. Where a test reads events, assert that the held call has
+  no result event (or that its `tool_done` has `held: true`).
 
 Same names, still check they behave the same: `Tool` (harness adds `EndsTurn`,
 `Block`), `Tier*`, `Grants`, `Inbox`, `ToolRunner`, `CallKey`,
