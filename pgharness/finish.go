@@ -3,7 +3,9 @@ package pgharness
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/acoshift/pgsql/pgctx"
 
@@ -34,10 +36,6 @@ func Finish(ctx context.Context, bus Bus, a *harness.Agent, conversationID, runI
 		if c.Status != harness.StatusRunning || c.RunID != runID {
 			return nil
 		}
-		pending, err := pendingQueued(ctx, conversationID)
-		if err != nil {
-			return err
-		}
 
 		// kept even on failure: messages are complete call/result pairs and the spend is real
 		var evs []harness.Event
@@ -45,10 +43,16 @@ func Finish(ctx context.Context, bus Bus, a *harness.Agent, conversationID, runI
 		for _, m := range res.Messages {
 			switch m.Role {
 			case harness.RoleUser:
-				// the inbox took pending messages oldest first
-				p := pending[0].UserPayload
-				p.QueuedSeq = pending[0].Seq
-				pending = pending[1:]
+				// the inbox tags each message with its user.queued seq
+				seq, err := strconv.ParseInt(m.ID, 10, 64)
+				if err != nil {
+					return fmt.Errorf("pgharness: inbox message id %q: %w", m.ID, err)
+				}
+				p, err := queuedPayload(ctx, conversationID, seq)
+				if err != nil {
+					return fmt.Errorf("pgharness: queued message %d: %w", seq, err)
+				}
+				p.QueuedSeq = seq
 				evs = append(evs, newEvent(harness.EventUserMessage, runID, p))
 			case harness.RoleAssistant:
 				if m.Content != "" {
@@ -130,8 +134,12 @@ func Finish(ctx context.Context, bus Bus, a *harness.Agent, conversationID, runI
 		}
 
 		// a message queued after the run's last inbox read still needs an answer
-		if status != harness.StatusIdle || len(pending) == 0 {
+		if status != harness.StatusIdle {
 			return nil
+		}
+		pending, err := pendingQueued(ctx, conversationID)
+		if err != nil || len(pending) == 0 {
+			return err
 		}
 		if err := deliverPending(ctx, bus, conversationID, ""); err != nil {
 			return err

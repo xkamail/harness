@@ -137,6 +137,7 @@ func Start(ctx context.Context, bus Bus, p StartParams) (*Conversation, string, 
 func Send(ctx context.Context, bus Bus, p SendParams) (string, error)                  // runID to kick, or "" when queued
 func Stop(ctx context.Context, bus Bus, conversationID string) (runID string, err error)
 func Retry(ctx context.Context, bus Bus, conversationID string) (runID string, err error) // re-run after error, or ""
+func Unqueue(ctx context.Context, bus Bus, conversationID string, queuedSeq int64) error // drop a pending user.queued
 func Get(ctx context.Context, id string) (*Conversation, error)
 func List(ctx context.Context, ownerID, agent string, limit int) ([]Conversation, error) // newest updated_at first; skips deleted
 func SetTitle(ctx context.Context, conversationID, title string) error // e.g. an LLM-generated title
@@ -232,6 +233,14 @@ Locks the row (`for update`) and branches on status:
 Starting a run is always: append `session.status{running}` with the new
 `run_id`, update the row, publish after commit.
 
+### Unqueue
+
+Drops a pending `user.queued` by its seq and appends
+`user.unqueued{queuedSeq}`; `Inbox` and `deliverPending` skip it. Returns
+`ErrNotQueued` if it was already delivered, dropped or never queued. A
+message the running run's inbox already read still reaches the model:
+`Finish` records its `user.message` after the `user.unqueued`.
+
 ### Load
 
 ```go
@@ -274,8 +283,8 @@ Rebuilds everything from the log, in one pass over `harness.events`:
   `user.message`), oldest first, each once per run; `revoke` is true when
   any arrive (a new instruction ends pre-approval). Wrap it with
   `dbosharness.Inbox` in a durable run. `Finish` pairs the run's injected
-  user messages with the oldest pending queued ones, so no bookkeeping
-  crosses from `Load` to `Finish`.
+  user messages with their `user.queued` by the seq the inbox puts in
+  `Message.ID`, so no bookkeeping crosses from `Load` to `Finish`.
 
 ### Finish
 
@@ -445,6 +454,7 @@ to inject the visible memories, newest first, after the system prompt.
 | `ErrNotFound` | conversation missing, deleted, or not the caller's |
 | `ErrBusy` | a decision while a run is running |
 | `ErrQueueFull` | too many queued messages |
+| `ErrNotQueued` | `Unqueue` of a message that is not pending |
 | `ErrStaleApproval` (core) | a decision naming anything but the open approval |
 | `ErrContext` | `Start` without a `Require`d key |
 | `ErrEmpty` | a message with neither text nor parts |
