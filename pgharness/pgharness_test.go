@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -143,7 +144,7 @@ func TestStartLoadFinish(t *testing.T) {
 		Usage: harness.Usage{InputTokens: 10, OutputTokens: 5},
 		Messages: []harness.Message{
 			{ID: run1 + ".1", Role: harness.RoleAssistant, Content: "checking", ToolCalls: []harness.ToolCall{call("c1", "now"), call("c2", "now")}},
-			{Role: harness.RoleTool, ToolCallID: "c1", Content: `"noon"`},
+			{Role: harness.RoleTool, ToolCallID: "c1", Content: `"noon"`, SubCalls: []harness.ToolCall{call("s1", "echo")}},
 			{Role: harness.RoleTool, ToolCallID: "c2", Content: `"noon"`},
 			{ID: run1 + ".2", Role: harness.RoleAssistant, Content: "It is noon."},
 		},
@@ -177,6 +178,9 @@ func TestStartLoadFinish(t *testing.T) {
 	l = mustLoad(t, ctx, c.ID, run2)
 	if roles(l.History) != "uattau" || len(l.History[1].ToolCalls) != 2 || l.History[1].Content != "checking" {
 		t.Fatalf("history %s %+v", roles(l.History), l.History[1])
+	}
+	if want := []harness.ToolCall{call("s1", "echo")}; !reflect.DeepEqual(l.History[2].SubCalls, want) || len(l.History[3].SubCalls) != 0 {
+		t.Fatalf("subcalls %+v / %+v, want %+v / none", l.History[2].SubCalls, l.History[3].SubCalls, want)
 	}
 	if harness.Value(l.Ctx, "page") != "" {
 		t.Fatal("per-message values leaked into the next message")

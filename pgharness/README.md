@@ -283,7 +283,7 @@ run was stopped or superseded):
 | --- | --- |
 | injected user message | `user.message` (`queuedSeq` links the `user.queued` it came from) |
 | assistant message with tool calls | `agent.tool_call` (text + calls + display), `message_id` set |
-| tool message | `agent.tool_result` (`tool_call_id` set) |
+| tool message | `agent.tool_result` (`tool_call_id` set, a sub-agent call's child calls in `subCalls`) |
 | `Blocks` | `agent.block` |
 | remember / forget results | `agent.memory` |
 | assistant text (`Reply`) | `agent.message` (`message_id` set) |
