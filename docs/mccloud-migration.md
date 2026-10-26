@@ -1,8 +1,8 @@
 # Hand-off: migrating mccloud onto harness
 
 Status as of 2026-10-25 (harness `307a372`, mccloud `d773ec1`). Static review
-only: Go was not available on the machine, so nothing below has been built or
-tested yet.
+only: nothing below has been built or tested yet. Go is now available on the
+machine, so it can be.
 
 **Verdict:** a 100% migration is not possible today. Do it in two phases:
 
@@ -63,7 +63,7 @@ swap is mostly mechanical.
 | `MaxAttachments`, `MaxTextAttachmentSize`, `MaxBinaryAttachmentSize` | `harness.DefaultAttachmentLimits` |
 | `ValidateParts(parts)` | `ValidateParts(parts, lim)` |
 | `messager` interface (`pkg/tu/fakellm.go`) | `harness.Model` (same three methods) |
-| `AwaitingConfirmation` (7 uses) | check `dispatch.go` for the equivalent; it's not exported today |
+| `AwaitingConfirmation` (7 uses) | no equivalent, by design (not a rename): rework the call sites around `RunResult.Stop == StopConfirm` / `RunResult.Confirm` |
 | `Registry` / `NewRegistry` | gone (inside `Compile`); mccloud only uses it in `pkg/ai` tests |
 
 Same names, still check they behave the same: `Tool` (harness adds `EndsTurn`,
@@ -106,7 +106,7 @@ Same names, still check they behave the same: `Tool` (harness adds `EndsTurn`,
    `agent.watch`, `agent.watch_ended`, `agent.todos`, `agent.inbox`,
    `session.title`, `user.unqueued`.
    → Add `pgharness.Append(ctx, bus, conversationID, ev...)` for app-defined
-   types, and make `Load` skip unknown types when rebuilding history.
+   types. `Load` already skips unknown types when rebuilding history.
 2. **Missing lifecycle ops** that mccloud exposes over arpc:
    - `Unqueue` (drop a `user.queued` message)
    - `Retry` (re-run after `error`)
@@ -114,7 +114,8 @@ Same names, still check they behave the same: `Tool` (harness adds `EndsTurn`,
    - soft delete (`deleted_at`; pgharness only hard-deletes)
    - `SetTitle` (mccloud makes LLM titles in `api/ai/title.go`; pgharness
      truncates the first message to 80 runes)
-   - queue cap (`ErrQueueFull`)
+
+   The queue cap already exists (`ErrQueueFull`).
 3. **Per-turn persistence** is still an open question in the pgharness README.
    mccloud has the same gap today, so this doesn't block the migration.
 
