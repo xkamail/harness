@@ -33,3 +33,10 @@ go.work.sum
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Claude Code (settings.json stays tracked)
+.claude/worktrees/
+.claude/settings.local.json
+
+# Beads agent interaction log (local, changes every session)
+.beads/interactions.jsonl
