@@ -49,6 +49,9 @@ type Agent struct {
 	Timeout time.Duration
 	// Nil never compacts.
 	Compaction *CompactionConfig
+	// Runs only as a sub-agent: no ask_user, propose or plan, so no ProposalSchema,
+	// gated tools or sub-agents of its own.
+	Headless bool
 
 	c *compiled
 }
@@ -116,6 +119,18 @@ func Compile(a Agent) (*Agent, error) {
 		case ToolPropose, ToolAskUser, ToolPlan, ToolLoadSkill:
 			return nil, fmt.Errorf("harness: tool name %q is reserved", t.Name)
 		}
+		switch {
+		case t.sub != nil && t.sub.c == nil:
+			return nil, fmt.Errorf("harness: sub-agent %q needs a compiled agent", t.Name)
+		case t.sub != nil && !t.sub.Headless:
+			return nil, fmt.Errorf("harness: sub-agent %q needs a headless agent", t.Name)
+		case t.sub != nil && a.Headless:
+			return nil, fmt.Errorf("harness: sub-agents cannot nest (tool %q)", t.Name)
+		}
+	}
+	gated := slices.ContainsFunc(a.Tools, func(t Tool) bool { return t.Tier > TierSafe || t.TierOf != nil })
+	if a.Headless && (len(a.ProposalSchema) > 0 || gated) {
+		return nil, fmt.Errorf("harness: headless agent %q cannot propose or hold gated tools", a.Name)
 	}
 	if len(a.Skills) > 0 {
 		st, err := skillTool(a.Skills)
@@ -146,7 +161,7 @@ func Compile(a Agent) (*Agent, error) {
 			Schema:      a.ProposalSchema,
 		})
 	}
-	if slices.ContainsFunc(a.Tools, func(t Tool) bool { return t.Tier > TierSafe || t.TierOf != nil }) {
+	if gated {
 		s, err := compileSchema(ToolPlan, json.RawMessage(planSchema))
 		if err != nil {
 			return nil, err
@@ -158,16 +173,18 @@ func Compile(a Agent) (*Agent, error) {
 			Schema:      json.RawMessage(planSchema),
 		})
 	}
-	ask, err := compileSchema(ToolAskUser, json.RawMessage(askUserSchema))
-	if err != nil {
-		return nil, err
+	if !a.Headless {
+		ask, err := compileSchema(ToolAskUser, json.RawMessage(askUserSchema))
+		if err != nil {
+			return nil, err
+		}
+		c.interaction[ToolAskUser] = ask
+		c.defs = append(c.defs, ToolDef{
+			Name:        ToolAskUser,
+			Description: "Call when you need the user to choose or clarify something you cannot determine with tools. Ends your turn.",
+			Schema:      json.RawMessage(askUserSchema),
+		})
 	}
-	c.interaction[ToolAskUser] = ask
-	c.defs = append(c.defs, ToolDef{
-		Name:        ToolAskUser,
-		Description: "Call when you need the user to choose or clarify something you cannot determine with tools. Ends your turn.",
-		Schema:      json.RawMessage(askUserSchema),
-	})
 	a.c = c
 	return &a, nil
 }
@@ -271,6 +288,14 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 	if runID == "" {
 		runID = "run"
 	}
+	rv := &runValues{m: m, onToolStart: cfg.OnToolStart, onToolDone: cfg.OnToolDone, usage: &childUsage{}}
+	// only a sub-agent shares its parent's slots; any other nested Run would wait on the slot its caller holds
+	if parent := runValuesFrom(ctx); parent != nil && parent.sub {
+		rv.sem, rv.sub = parent.sem, parent.sub
+	} else {
+		rv.sem = make(chan struct{}, maxParallelCalls)
+	}
+	ctx = withRunValues(ctx, rv)
 
 	msgs := make([]Message, 0, len(cfg.History)+3)
 	if sys := strings.TrimSpace(a.PlatformPrompt + "\n\n" + a.SystemPrompt); sys != "" {
@@ -294,6 +319,7 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 	granted := Grants{Tools: slices.Clone(cfg.Grants.Tools), Calls: slices.Clone(cfg.Grants.Calls)}
 	if cfg.Decision != nil {
 		t, msg, err := a.decide(ctx, msgs, cfg)
+		res.Usage = res.Usage.Add(rv.usage.take())
 		if err != nil {
 			return res, err
 		}
@@ -371,6 +397,7 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 		}
 		// Record the assistant turn only with its tool results, so Messages never holds unanswered calls but the held one.
 		t, err := a.runTurn(ctx, id, msg.ToolCalls, &granted, false, cfg)
+		res.Usage = res.Usage.Add(rv.usage.take())
 		if err != nil {
 			return res, err
 		}
@@ -486,6 +513,10 @@ func (a *Agent) Display(call ToolCall) ToolDisplay {
 		if s := t.Describe(call.Arguments); s != "" {
 			d.Summary = s
 		}
+	}
+	// parallel sub-agent calls share a Label; their task tells them apart
+	if t.sub != nil {
+		d.Label = d.Summary
 	}
 	return d
 }

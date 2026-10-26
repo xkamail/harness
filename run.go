@@ -25,7 +25,8 @@ type RunConfig struct {
 	// OnReset: messageID's streamed text is void because the call is retried (step.reset).
 	OnReset func(messageID string)
 	// Called again for turns a durable run replays, so clients dedupe by ToolCallID.
-	// OnToolDone may be called concurrently.
+	// Sub-agents report their calls here too, under RunID = the sub-agent call's id, so both
+	// may be called concurrently; a replayed turn does not report its sub-agents' calls again.
 	OnToolStart func(messageID string, call ToolCall, d ToolDisplay)
 	OnToolDone  func(call ToolCall, out ToolOutcome)
 	Budget      Budget

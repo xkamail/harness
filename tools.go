@@ -67,6 +67,9 @@ type Tool struct {
 	Hidden  bool
 	// Summary for confirm cards and plan steps; sees unvalidated arguments. Nil or empty means Label.
 	Describe func(args json.RawMessage) string
+
+	// Set by SubAgent.
+	sub *Agent
 }
 
 type ToolDisplay struct {

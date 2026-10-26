@@ -144,13 +144,24 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 		isCheck  = make([]bool, len(calls))
 		checked  []int // gated calls whose Check runs with the dispatches
 	)
-	sem := make(chan struct{}, maxParallelCalls)
+	rv := runValuesFrom(ctx)
 	enqueue := func(i int, check bool) {
 		call := calls[i]
 		idx = append(idx, i)
+		tool, ok := c.tools[call.Name]
+		sub := ok && tool.sub != nil
 		fns = append(fns, func(ctx context.Context) (string, error) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			// a durable runner hands fn a ctx not derived from Run's
+			if sub {
+				// sub-agents hold no slot: their own tools need the slots
+				crv := *rv
+				crv.callID = call.ID
+				ctx = withRunValues(ctx, &crv)
+			} else {
+				ctx = withRunValues(ctx, rv)
+				rv.sem <- struct{}{}
+				defer func() { <-rv.sem }()
+			}
 			start := time.Now()
 			var (
 				o   callOut
