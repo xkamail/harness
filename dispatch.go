@@ -88,6 +88,9 @@ type callOut struct {
 	Checked  bool            `json:"checked,omitempty"`
 	Preview  json.RawMessage `json:"preview,omitempty"`
 	Duration time.Duration   `json:"duration"`
+	// SubCalls and SubUsage: what a sub-agent call's child did, checkpointed with the result.
+	SubCalls []ToolCall `json:"subCalls,omitempty"`
+	SubUsage Usage      `json:"subUsage,omitzero"`
 }
 
 func (o callOut) encode() string {
@@ -111,13 +114,16 @@ type turn struct {
 	preview     json.RawMessage
 	blocks      []Block
 	endsTurn    bool
+	// subCalls[i] is calls[i]'s child tool calls; usage sums the children's.
+	subCalls [][]ToolCall
+	usage    Usage
 }
 
 // runTurn answers every call. At most one interaction or held confirmation
 // per turn; later ones are skipped. force runs every call regardless of tier.
 func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall, granted *Grants, force bool, cfg RunConfig) (*turn, error) {
 	c := a.c
-	t := &turn{outs: make([]string, len(calls))}
+	t := &turn{outs: make([]string, len(calls)), subCalls: make([][]ToolCall, len(calls))}
 	for _, call := range calls {
 		if cfg.OnToolStart != nil {
 			cfg.OnToolStart(messageID, call, a.Display(call))
@@ -144,13 +150,23 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 		isCheck  = make([]bool, len(calls))
 		checked  []int // gated calls whose Check runs with the dispatches
 	)
-	sem := make(chan struct{}, maxParallelCalls)
+	rv := runValuesFrom(ctx)
 	enqueue := func(i int, check bool) {
 		call := calls[i]
 		idx = append(idx, i)
+		// a sub-agent call takes no slot: its child's tools need them
+		isSub := !check && c.tools[call.Name] != nil && c.tools[call.Name].sub != nil
 		fns = append(fns, func(ctx context.Context) (string, error) {
-			sem <- struct{}{}
-			defer func() { <-sem }()
+			// a durable runner hands fns a ctx not derived from Run's
+			ctx = withRunValues(ctx, rv)
+			var slot *subResult
+			if isSub {
+				slot = &subResult{}
+				ctx = withSubSlot(ctx, slot)
+			} else {
+				rv.sem <- struct{}{}
+				defer func() { <-rv.sem }()
+			}
 			start := time.Now()
 			var (
 				o   callOut
@@ -165,6 +181,9 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 				return "", err
 			}
 			o.Duration = time.Since(start)
+			if slot != nil {
+				o.SubCalls, o.SubUsage = slot.calls, slot.usage
+			}
 			// a check's outcome waits for the turn: it may be held
 			if !check {
 				reported[i].Store(true)
@@ -228,6 +247,8 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 	for j, i := range idx {
 		outs[i] = decodeOut(res[j])
 		t.outs[i] = outs[i].Out
+		t.subCalls[i] = outs[i].SubCalls
+		t.usage = t.usage.Add(outs[i].SubUsage)
 		// a durable runner replaying a turn returns results without running fns
 		if !isCheck[i] && !reported[i].Load() {
 			done(i, outs[i], false)

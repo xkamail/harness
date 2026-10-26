@@ -40,6 +40,10 @@ type Agent struct {
 	// May return completed arguments; its error goes to the model verbatim.
 	PrepareProposal func(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
 
+	// Runs only as a sub-agent: no ask_user, propose or plan, so no ProposalSchema and no
+	// gated tools, and it cannot hold sub-agents.
+	Headless bool
+
 	// Empty keeps the provider default.
 	ReasoningEffort string
 
@@ -109,12 +113,25 @@ func Compile(a Agent) (*Agent, error) {
 	if a.MaxIterations < 0 || a.Timeout < 0 {
 		return nil, fmt.Errorf("harness: agent %q has a negative limit", a.Name)
 	}
+	gated := func(t Tool) bool { return t.Tier > TierSafe || t.TierOf != nil }
+	if a.Headless && (len(a.ProposalSchema) > 0 || slices.ContainsFunc(a.Tools, gated)) {
+		return nil, fmt.Errorf("harness: headless agent %q cannot propose or hold gated tools", a.Name)
+	}
 	c := &compiled{tools: make(map[string]*registered), interaction: make(map[string]*jsonschema.Schema)}
 	tools := a.Tools
 	for _, t := range tools {
 		switch t.Name {
 		case ToolPropose, ToolAskUser, ToolPlan, ToolLoadSkill:
 			return nil, fmt.Errorf("harness: tool name %q is reserved", t.Name)
+		}
+		switch {
+		case t.sub == nil:
+		case a.Headless:
+			return nil, fmt.Errorf("harness: sub-agents cannot nest (tool %q)", t.Name)
+		case t.sub.c == nil:
+			return nil, fmt.Errorf("harness: sub-agent %q is not compiled", t.Name)
+		case !t.sub.Headless:
+			return nil, fmt.Errorf("harness: sub-agent %q needs a headless agent", t.Name)
 		}
 	}
 	if len(a.Skills) > 0 {
@@ -146,7 +163,7 @@ func Compile(a Agent) (*Agent, error) {
 			Schema:      a.ProposalSchema,
 		})
 	}
-	if slices.ContainsFunc(a.Tools, func(t Tool) bool { return t.Tier > TierSafe || t.TierOf != nil }) {
+	if slices.ContainsFunc(a.Tools, gated) {
 		s, err := compileSchema(ToolPlan, json.RawMessage(planSchema))
 		if err != nil {
 			return nil, err
@@ -158,16 +175,18 @@ func Compile(a Agent) (*Agent, error) {
 			Schema:      json.RawMessage(planSchema),
 		})
 	}
-	ask, err := compileSchema(ToolAskUser, json.RawMessage(askUserSchema))
-	if err != nil {
-		return nil, err
+	if !a.Headless {
+		ask, err := compileSchema(ToolAskUser, json.RawMessage(askUserSchema))
+		if err != nil {
+			return nil, err
+		}
+		c.interaction[ToolAskUser] = ask
+		c.defs = append(c.defs, ToolDef{
+			Name:        ToolAskUser,
+			Description: "Call when you need the user to choose or clarify something you cannot determine with tools. Ends your turn.",
+			Schema:      json.RawMessage(askUserSchema),
+		})
 	}
-	c.interaction[ToolAskUser] = ask
-	c.defs = append(c.defs, ToolDef{
-		Name:        ToolAskUser,
-		Description: "Call when you need the user to choose or clarify something you cannot determine with tools. Ends your turn.",
-		Schema:      json.RawMessage(askUserSchema),
-	})
 	a.c = c
 	return &a, nil
 }
@@ -267,6 +286,7 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 		ctx, cancel = context.WithTimeout(ctx, a.Timeout)
 		defer cancel()
 	}
+	ctx = startRun(ctx, m)
 	runID := cfg.RunID
 	if runID == "" {
 		runID = "run"
@@ -374,13 +394,14 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 		if err != nil {
 			return res, err
 		}
+		res.Usage = res.Usage.Add(t.usage)
 		add(msg)
 		for i, call := range msg.ToolCalls {
 			// the decision answers a held call or a plan
 			held := t.confirm != nil && call.ID == t.confirm.ID
 			plan := t.interaction != nil && t.interaction.Name == ToolPlan && call.ID == t.interaction.ID
 			if !held && !plan {
-				add(Message{Role: RoleTool, Content: t.outs[i], ToolCallID: call.ID})
+				add(Message{Role: RoleTool, Content: t.outs[i], ToolCallID: call.ID, SubCalls: t.subCalls[i]})
 			}
 		}
 		res.Blocks = append(res.Blocks, t.blocks...)
