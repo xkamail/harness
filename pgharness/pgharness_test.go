@@ -586,6 +586,46 @@ func TestSetTitle(t *testing.T) {
 	}
 }
 
+func TestDelete(t *testing.T) {
+	ctx := setup(t)
+	v := harness.Values{"serverId": "s1"}
+	p := StartParams{Agent: "test", OwnerID: "u1", Context: v, Policy: PolicyPerContext, Message: "hi"}
+	c, run := mustStart(t, ctx, nil, p)
+	if err := Delete(ctx, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	if next := mustFinish(t, ctx, c.ID, run, &harness.RunResult{}, nil); next != "" {
+		t.Fatalf("finish after delete started %q", next)
+	}
+	if _, err := Get(ctx, c.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("get: %v", err)
+	}
+	if _, err := Load(ctx, c.ID, run); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("load: %v", err)
+	}
+	if err := SetTitle(ctx, c.ID, "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("set title: %v", err)
+	}
+	if _, err := Send(ctx, nil, SendParams{ConversationID: c.ID, Message: "x"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("send: %v", err)
+	}
+	if _, err := Retry(ctx, nil, c.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("retry: %v", err)
+	}
+	if err := Delete(ctx, c.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second delete: %v", err)
+	}
+	if err := Delete(ctx, xid.New().String()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id: %v", err)
+	}
+	if err := FailOrphanedRuns(ctx, nil, 0, func(string) bool { return false }); err != nil {
+		t.Fatalf("orphan sweep: %v", err)
+	}
+	if next, _ := mustStart(t, ctx, nil, p); next.ID == c.ID {
+		t.Fatal("start resumed a deleted conversation")
+	}
+}
+
 var png = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde")
 
 func TestAttachments(t *testing.T) {

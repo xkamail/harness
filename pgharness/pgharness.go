@@ -95,7 +95,7 @@ func Get(ctx context.Context, id string) (*Conversation, error) {
 
 // getConversation with lock takes FOR UPDATE; every writer locks first, which serializes seq allocation.
 func getConversation(ctx context.Context, id string, lock bool) (*Conversation, error) {
-	q := `select ` + conversationColumns + ` from harness.conversations where id = $1`
+	q := `select ` + conversationColumns + ` from harness.conversations where id = $1 and deleted_at is null`
 	if lock {
 		q += ` for update`
 	}

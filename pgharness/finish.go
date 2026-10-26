@@ -2,6 +2,7 @@ package pgharness
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/acoshift/pgsql/pgctx"
@@ -23,6 +24,10 @@ func Finish(ctx context.Context, bus Bus, a *harness.Agent, conversationID, runI
 	err := pgctx.RunInTx(context.WithoutCancel(ctx), func(ctx context.Context) error {
 		next = ""
 		c, err := getConversation(ctx, conversationID, true)
+		if errors.Is(err, ErrNotFound) {
+			// deleted mid-run
+			return nil
+		}
 		if err != nil {
 			return err
 		}
