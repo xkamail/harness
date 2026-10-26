@@ -160,7 +160,7 @@ func (b *historyBuilder) add(ev harness.Event) error {
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			return err
 		}
-		b.push(ev.Seq, harness.Message{Role: harness.RoleTool, Content: p.Content, ToolCallID: ev.ToolCallID})
+		b.push(ev.Seq, harness.Message{Role: harness.RoleTool, Content: p.Content, ToolCallID: ev.ToolCallID, SubCalls: p.SubCalls})
 		b.results[ev.ToolCallID] = true
 		b.unresolved = slices.DeleteFunc(b.unresolved, func(id string) bool { return id == ev.ToolCallID })
 	case harness.EventConfirm:

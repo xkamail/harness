@@ -41,6 +41,8 @@ type ToolCallPayload struct {
 type ToolResultPayload struct {
 	Name    string `json:"name"`
 	Content string `json:"content"`
+	// SubCalls are a sub-agent call's child tool calls.
+	SubCalls []harness.ToolCall `json:"subCalls,omitempty"`
 }
 
 // InteractionPayload is agent.question, agent.proposal and agent.plan: the

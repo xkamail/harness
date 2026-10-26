@@ -58,7 +58,7 @@ func Finish(ctx context.Context, bus Bus, a *harness.Agent, conversationID, runI
 					evs = append(evs, ev)
 				}
 			case harness.RoleTool:
-				evs = append(evs, callEvent(harness.EventToolResult, runID, m.ToolCallID, ToolResultPayload{Name: names[m.ToolCallID], Content: m.Content}))
+				evs = append(evs, callEvent(harness.EventToolResult, runID, m.ToolCallID, ToolResultPayload{Name: names[m.ToolCallID], Content: m.Content, SubCalls: m.SubCalls}))
 				if p, ok := parseMemoryChange(names[m.ToolCallID], m.Content); ok {
 					evs = append(evs, callEvent(harness.EventMemory, runID, m.ToolCallID, p))
 				}
