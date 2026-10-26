@@ -788,6 +788,47 @@ func TestList(t *testing.T) {
 	}
 }
 
+func TestAppend(t *testing.T) {
+	ctx := setup(t)
+	bus := NewMemoryBus()
+	c, run := mustStart(t, ctx, bus, StartParams{Message: "hi"})
+	events, stop, err := bus.Subscribe(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+
+	todos := harness.Event{Type: "agent.todos", RunID: run, Payload: json.RawMessage(`{"items":["a"]}`)}
+	got, err := Append(ctx, bus, c.ID, todos, harness.Event{Type: "session.title", Payload: json.RawMessage(`{"title":"t"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Seq == 0 || got[1].Seq != got[0].Seq+1 || got[0].CreatedAt.IsZero() {
+		t.Fatalf("appended %+v", got)
+	}
+	select {
+	case ev := <-events:
+		if ev.Seq != got[0].Seq || ev.Type != "agent.todos" {
+			t.Fatalf("published %d %s", ev.Seq, ev.Type)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("not published")
+	}
+	evs, err := Events(ctx, c.ID, got[0].Seq-1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 2 || evs[0].RunID != run || string(evs[1].Payload) != `{"title": "t"}` {
+		t.Fatalf("stored %+v", evs)
+	}
+	if l := mustLoad(t, ctx, c.ID, run); len(l.History) != 1 {
+		t.Fatalf("history %d messages", len(l.History))
+	}
+	if _, err := Append(ctx, bus, xid.New().String(), todos); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id: %v", err)
+	}
+}
+
 var png = []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde")
 
 func TestAttachments(t *testing.T) {
