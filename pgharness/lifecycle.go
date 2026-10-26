@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/acoshift/pgsql"
@@ -248,6 +249,26 @@ func send(ctx context.Context, bus Bus, c *Conversation, p SendParams) (string, 
 		return "", err
 	}
 	return startRun(ctx, bus, c.ID)
+}
+
+// Unqueue drops a user.queued message, by its seq, before it is delivered and records user.unqueued.
+// A message the running run's Inbox already read still reaches the model, so Finish records its delivery after the unqueue.
+func Unqueue(ctx context.Context, bus Bus, conversationID string, queuedSeq int64) error {
+	return pgctx.RunInTx(ctx, func(ctx context.Context) error {
+		c, err := getConversation(ctx, conversationID, true)
+		if err != nil {
+			return err
+		}
+		pending, err := pendingQueued(ctx, c.ID)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(pending, func(q queuedMessage) bool { return q.Seq == queuedSeq }) {
+			return ErrNotQueued
+		}
+		_, err = appendEvents(ctx, bus, c.ID, newEvent(harness.EventUserUnqueued, "", UnqueuedPayload{QueuedSeq: queuedSeq}))
+		return err
+	})
 }
 
 // Retry re-runs a conversation whose last run ended in error and returns the new run id to kick,

@@ -29,6 +29,11 @@ type UserPayload struct {
 	QueuedSeq int64 `json:"queuedSeq,omitempty"`
 }
 
+// UnqueuedPayload is user.unqueued: the user.queued dropped before delivery.
+type UnqueuedPayload struct {
+	QueuedSeq int64 `json:"queuedSeq"`
+}
+
 // ToolCallPayload is agent.tool_call, one per call; calls of one assistant
 // message share its MessageID.
 type ToolCallPayload struct {
@@ -208,7 +213,7 @@ type queuedMessage struct {
 }
 
 // pendingQueued returns the user.queued messages no user.message has
-// delivered yet, oldest first.
+// delivered and no user.unqueued has dropped yet, oldest first.
 func pendingQueued(ctx context.Context, conversationID string) ([]queuedMessage, error) {
 	out := make([]queuedMessage, 0)
 	err := pgctx.Iter(ctx, func(scan pgsql.Scanner) error {
@@ -235,12 +240,31 @@ func pendingQueued(ctx context.Context, conversationID string) ([]queuedMessage,
 				select 1
 				from harness.events m
 				where m.conversation_id = q.conversation_id
-					and m.type = $3
+					and m.type in ($3, $4)
 					and (m.payload->>'queuedSeq')::bigint = q.seq
 			)
 		order by q.seq
-	`, conversationID, harness.EventUserQueued, harness.EventUserMessage)
+	`, conversationID, harness.EventUserQueued, harness.EventUserMessage, harness.EventUserUnqueued)
 	return out, err
+}
+
+// queuedPayload returns the payload of the user.queued at seq.
+func queuedPayload(ctx context.Context, conversationID string, seq int64) (UserPayload, error) {
+	var (
+		p       UserPayload
+		payload []byte
+	)
+	err := pgctx.QueryRow(ctx, `
+		select payload
+		from harness.events
+		where conversation_id = $1
+			and seq = $2
+			and type = $3
+	`, conversationID, seq, harness.EventUserQueued).Scan(&payload)
+	if err != nil {
+		return p, err
+	}
+	return p, json.Unmarshal(payload, &p)
 }
 
 // deliverPending appends every pending queued message as the user.message

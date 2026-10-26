@@ -13,7 +13,7 @@ const (
 
 // Message is a provider-neutral chat message; SDK types never leak into history.
 type Message struct {
-	// ID is set by Run on assistant messages only; adapters ignore it.
+	// ID is set by Run on assistant messages and may be set by an Inbox on user messages; adapters ignore it.
 	ID      string `json:"id,omitempty"`
 	Role    Role   `json:"role"`
 	Content string `json:"content"`

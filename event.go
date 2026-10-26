@@ -9,27 +9,28 @@ import (
 type EventType string
 
 const (
-	EventUserMessage EventType = "user.message"
-	EventUserQueued  EventType = "user.queued" // sent while a run was busy
-	EventMessage     EventType = "agent.message"
-	EventQuestion    EventType = "agent.question"
-	EventProposal    EventType = "agent.proposal"
-	EventPlan        EventType = "agent.plan"
-	EventConfirm     EventType = "agent.confirm"
-	EventDecision    EventType = "user.decision" // approve, approve_all, reject
-	EventToolCall    EventType = "agent.tool_call"
-	EventToolResult  EventType = "agent.tool_result"
-	EventBlock       EventType = "agent.block"
-	EventMemory      EventType = "agent.memory"
-	EventError       EventType = "agent.error"
-	EventStatus      EventType = "session.status"
-	EventSummary     EventType = "session.summary"  // compaction
-	EventDelta       EventType = "agent.delta"      // ephemeral
-	EventReasoning   EventType = "agent.reasoning"  // ephemeral
-	EventStepReset   EventType = "step.reset"       // ephemeral: drop MessageID's streamed text
-	EventToolStart   EventType = "agent.tool_start" // ephemeral: a call is about to run
-	EventToolDone    EventType = "agent.tool_done"  // ephemeral: a call finished
-	EventStreamReady EventType = "stream.ready"     // ephemeral, pgharness.Follow only
+	EventUserMessage  EventType = "user.message"
+	EventUserQueued   EventType = "user.queued"   // sent while a run was busy
+	EventUserUnqueued EventType = "user.unqueued" // a user.queued dropped before delivery
+	EventMessage      EventType = "agent.message"
+	EventQuestion     EventType = "agent.question"
+	EventProposal     EventType = "agent.proposal"
+	EventPlan         EventType = "agent.plan"
+	EventConfirm      EventType = "agent.confirm"
+	EventDecision     EventType = "user.decision" // approve, approve_all, reject
+	EventToolCall     EventType = "agent.tool_call"
+	EventToolResult   EventType = "agent.tool_result"
+	EventBlock        EventType = "agent.block"
+	EventMemory       EventType = "agent.memory"
+	EventError        EventType = "agent.error"
+	EventStatus       EventType = "session.status"
+	EventSummary      EventType = "session.summary"  // compaction
+	EventDelta        EventType = "agent.delta"      // ephemeral
+	EventReasoning    EventType = "agent.reasoning"  // ephemeral
+	EventStepReset    EventType = "step.reset"       // ephemeral: drop MessageID's streamed text
+	EventToolStart    EventType = "agent.tool_start" // ephemeral: a call is about to run
+	EventToolDone     EventType = "agent.tool_done"  // ephemeral: a call finished
+	EventStreamReady  EventType = "stream.ready"     // ephemeral, pgharness.Follow only
 )
 
 // Ephemeral reports whether t is never persisted.

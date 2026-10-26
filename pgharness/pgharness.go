@@ -20,6 +20,8 @@ var (
 	ErrBusy = errors.New("pgharness: conversation is busy")
 	// ErrQueueFull: too many messages queued while a run is busy.
 	ErrQueueFull = errors.New("pgharness: queue is full")
+	// ErrNotQueued: Unqueue of a message that is not pending (delivered, dropped or never queued).
+	ErrNotQueued = errors.New("pgharness: message is not queued")
 	// ErrContext: Start without one of its Require keys.
 	ErrContext = errors.New("pgharness: conversation context missing a key")
 	// ErrSuperseded: Load for a run that is no longer current (stopped, failed or replaced).

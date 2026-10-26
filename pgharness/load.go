@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strconv"
 
 	"github.com/acoshift/pgsql"
 	"github.com/acoshift/pgsql/pgctx"
@@ -240,7 +241,8 @@ func (b *historyBuilder) finish() {
 }
 
 // newInbox reads the pending user.queued messages the run has not taken
-// yet. Any message is a new instruction, so it revokes the run's grants.
+// yet, tagging each with its seq in Message.ID for Finish. Any message is a
+// new instruction, so it revokes the run's grants.
 func newInbox(conversationID string) harness.Inbox {
 	taken := map[int64]bool{}
 	return func(ctx context.Context) ([]harness.Message, bool, error) {
@@ -254,7 +256,7 @@ func newInbox(conversationID string) harness.Inbox {
 				continue
 			}
 			taken[q.Seq] = true
-			msgs = append(msgs, harness.Message{Role: harness.RoleUser, Content: q.Text, Parts: q.Parts})
+			msgs = append(msgs, harness.Message{ID: strconv.FormatInt(q.Seq, 10), Role: harness.RoleUser, Content: q.Text, Parts: q.Parts})
 		}
 		if len(msgs) == 0 {
 			return nil, false, nil

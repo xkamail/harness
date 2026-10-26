@@ -476,7 +476,7 @@ func TestSteering(t *testing.T) {
 	Send(ctx, nil, SendParams{ConversationID: c.ID, Message: "and tag it"})
 
 	next := mustFinish(t, ctx, c.ID, run, &harness.RunResult{Stop: harness.StopReply, Messages: []harness.Message{
-		{Role: harness.RoleUser, Content: "use staging"},
+		msgs[0],
 		{ID: run + ".2", Role: harness.RoleAssistant, Content: "Deployed to staging."},
 	}}, nil)
 	if next == "" {
@@ -516,6 +516,133 @@ func TestQueueFull(t *testing.T) {
 	}
 	if _, err := Send(ctx, nil, SendParams{ConversationID: c.ID, Message: "one more"}); !errors.Is(err, ErrQueueFull) {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// queuedSeqs maps each user.queued text to its seq.
+func queuedSeqs(t *testing.T, ctx context.Context, id string) map[string]int64 {
+	t.Helper()
+	evs, err := Events(ctx, id, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]int64{}
+	for _, ev := range evs {
+		if ev.Type != harness.EventUserQueued {
+			continue
+		}
+		var p UserPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		out[p.Text] = ev.Seq
+	}
+	return out
+}
+
+func TestUnqueue(t *testing.T) {
+	ctx := setup(t)
+	c, _ := mustStart(t, ctx, nil, StartParams{Message: "go"})
+	for _, m := range []string{"a", "b"} {
+		if _, err := Send(ctx, nil, SendParams{ConversationID: c.ID, Message: m}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := queuedSeqs(t, ctx, c.ID)
+	if err := Unqueue(ctx, nil, c.ID, q["a"]); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := Events(ctx, c.ID, 0, 100)
+	var unqueued []int64
+	for _, ev := range evs {
+		if ev.Type == harness.EventUserUnqueued {
+			var p UnqueuedPayload
+			if err := json.Unmarshal(ev.Payload, &p); err != nil {
+				t.Fatal(err)
+			}
+			unqueued = append(unqueued, p.QueuedSeq)
+		}
+	}
+	if fmt.Sprint(unqueued) != fmt.Sprint([]int64{q["a"]}) {
+		t.Fatalf("unqueued %v, want [%d]", unqueued, q["a"])
+	}
+	if err := Unqueue(ctx, nil, c.ID, q["a"]); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("twice: %v", err)
+	}
+	if err := Unqueue(ctx, nil, c.ID, 1); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("user.message seq: %v", err)
+	}
+	if err := Unqueue(ctx, nil, "nope", q["a"]); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown conversation: %v", err)
+	}
+
+	// delivery skips it
+	if _, err := Stop(ctx, nil, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ = Events(ctx, c.ID, 0, 100)
+	delivered := map[string]int64{}
+	for _, ev := range evs {
+		var p UserPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if ev.Type == harness.EventUserMessage && p.QueuedSeq != 0 {
+			delivered[p.Text] = p.QueuedSeq
+		}
+	}
+	if len(delivered) != 1 || delivered["b"] != q["b"] {
+		t.Fatalf("delivered %v, want only b=%d", delivered, q["b"])
+	}
+	if err := Unqueue(ctx, nil, c.ID, q["b"]); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("delivered: %v", err)
+	}
+
+	// the inbox skips it, and pairing is by ID even when a message is unqueued after the inbox read
+	c2, run := mustStart(t, ctx, nil, StartParams{Message: "go"})
+	l := mustLoad(t, ctx, c2.ID, run)
+	for _, m := range []string{"x", "y"} {
+		if _, err := Send(ctx, nil, SendParams{ConversationID: c2.ID, Message: m}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q2 := queuedSeqs(t, ctx, c2.ID)
+	if err := Unqueue(ctx, nil, c2.ID, q2["x"]); err != nil {
+		t.Fatal(err)
+	}
+	msgs, _, err := l.Inbox(l.Ctx)
+	if err != nil || len(msgs) != 1 || msgs[0].Content != "y" || msgs[0].ID != strconv.FormatInt(q2["y"], 10) {
+		t.Fatalf("inbox %+v %v", msgs, err)
+	}
+	if _, err := Send(ctx, nil, SendParams{ConversationID: c2.ID, Message: "z"}); err != nil {
+		t.Fatal(err)
+	}
+	more, _, err := l.Inbox(l.Ctx)
+	q2 = queuedSeqs(t, ctx, c2.ID)
+	if err != nil || len(more) != 1 || more[0].Content != "z" || more[0].ID != strconv.FormatInt(q2["z"], 10) {
+		t.Fatalf("inbox %+v %v", more, err)
+	}
+	if err := Unqueue(ctx, nil, c2.ID, q2["z"]); err != nil {
+		t.Fatalf("unqueue after inbox read: %v", err)
+	}
+	res := &harness.RunResult{Stop: harness.StopReply, Messages: append(append(msgs, more...),
+		harness.Message{ID: run + ".1", Role: harness.RoleAssistant, Content: "ok"})}
+	if next := mustFinish(t, ctx, c2.ID, run, res, nil); next != "" {
+		t.Fatalf("unqueued messages started run %q", next)
+	}
+	evs, _ = Events(ctx, c2.ID, 0, 100)
+	delivered = map[string]int64{}
+	for _, ev := range evs {
+		var p UserPayload
+		if err := json.Unmarshal(ev.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if ev.Type == harness.EventUserMessage && p.QueuedSeq != 0 {
+			delivered[p.Text] = p.QueuedSeq
+		}
+	}
+	if len(delivered) != 2 || delivered["y"] != q2["y"] || delivered["z"] != q2["z"] {
+		t.Fatalf("delivered %v, want y=%d z=%d", delivered, q2["y"], q2["z"])
 	}
 }
 
