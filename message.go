@@ -21,6 +21,8 @@ type Message struct {
 	Parts      []Part     `json:"parts,omitempty"`
 	ToolCalls  []ToolCall `json:"toolCalls,omitempty"`
 	ToolCallID string     `json:"toolCallId,omitempty"`
+	// SubCalls: a sub-agent result's child tool calls, kept when the child fails. Adapters ignore it.
+	SubCalls []ToolCall `json:"subCalls,omitempty"`
 }
 
 type PartType string
