@@ -64,7 +64,8 @@ create table if not exists harness.conversations (
     model          text        not null default '',
     context_tokens bigint      not null default 0,
     created_at     timestamptz not null default now(),
-    updated_at     timestamptz not null default now()
+    updated_at     timestamptz not null default now(),
+    deleted_at     timestamptz                         -- soft delete; see Delete
 );
 create index if not exists conversations_owner_idx
     on harness.conversations (owner_id, agent, updated_at desc);
@@ -138,6 +139,7 @@ func Stop(ctx context.Context, bus Bus, conversationID string) (runID string, er
 func Retry(ctx context.Context, bus Bus, conversationID string) (runID string, err error) // re-run after error, or ""
 func Get(ctx context.Context, id string) (*Conversation, error)
 func SetTitle(ctx context.Context, conversationID, title string) error // e.g. an LLM-generated title
+func Delete(ctx context.Context, conversationID string) error                          // soft delete; reads as ErrNotFound after
 
 // Inside the run (workflow)
 func Load(ctx context.Context, conversationID, runID string) (*Loaded, error)
@@ -426,6 +428,10 @@ to inject the visible memories, newest first, after the system prompt.
   for at least `idle` whose run `alive` reports dead (DBOS no longer knows
   it) as `error`, with an `agent.error`. Call after `dbos.Launch` with idle 0,
   then periodically.
+- `Delete(ctx, id)`: soft-deletes one conversation (sets `deleted_at`). It then
+  reads as `ErrNotFound` everywhere and `Start` no longer resumes it; rows,
+  events and blobs stay. A run still in flight is not stopped; its `Finish`
+  is a no-op. `DeleteContext` is the hard purge.
 - `DeleteContext(ctx, v)`: deletes every conversation whose context contains
   `v`, their events and attachment rows (cascade), their blobs, and the
   memories whose context contains `v`. Call it where the project deletes the
@@ -435,7 +441,7 @@ to inject the visible memories, newest first, after the system prompt.
 
 | Error | When |
 | --- | --- |
-| `ErrNotFound` | conversation missing or not the caller's |
+| `ErrNotFound` | conversation missing, deleted, or not the caller's |
 | `ErrBusy` | a decision while a run is running |
 | `ErrQueueFull` | too many queued messages |
 | `ErrStaleApproval` (core) | a decision naming anything but the open approval |
@@ -472,6 +478,7 @@ to inject the visible memories, newest first, after the system prompt.
 | `api/ai/attachment.go` byte budget | `Load` |
 | `api/ai/agent/memory.go` | `WithMemory` |
 | LLM-generated session title | `SetTitle` |
+| delete a session | `Delete` (soft) |
 | FK cascade on `servers` | `DeleteContext(ctx, Values{"serverId": id})` in server delete |
 
 Keep the `ai_*` tables read-only for a while after the copy, for rollback.

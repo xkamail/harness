@@ -87,6 +87,7 @@ func findConversation(ctx context.Context, p StartParams) (string, error) {
 			where agent = $1
 				and owner_id = $2
 				and context = $3
+				and deleted_at is null
 			order by updated_at desc
 			limit 1
 		`, p.Agent, p.OwnerID, pgsql.JSON(p.Context)).Scan(&id)
@@ -96,6 +97,7 @@ func findConversation(ctx context.Context, p StartParams) (string, error) {
 			from harness.conversations
 			where agent = $1
 				and context = $2
+				and deleted_at is null
 			order by updated_at desc
 			limit 1
 		`, p.Agent, pgsql.JSON(p.Context)).Scan(&id)
@@ -125,7 +127,30 @@ func SetTitle(ctx context.Context, conversationID, s string) error {
 		update harness.conversations
 		set title = $2
 		where id = $1
+			and deleted_at is null
 	`, conversationID, title(s))
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Delete soft-deletes a conversation: it then reads as missing (ErrNotFound) everywhere.
+// Rows, events and blobs are kept; use DeleteContext to purge.
+func Delete(ctx context.Context, conversationID string) error {
+	res, err := pgctx.Exec(ctx, `
+		update harness.conversations
+		set deleted_at = now()
+		where id = $1
+			and deleted_at is null
+	`, conversationID)
 	if err != nil {
 		return err
 	}

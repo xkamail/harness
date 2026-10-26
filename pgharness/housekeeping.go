@@ -29,6 +29,7 @@ func FailOrphanedRuns(ctx context.Context, bus Bus, idle time.Duration, alive fu
 			coalesce(run_id, '')
 		from harness.conversations
 		where status = 'running'
+			and deleted_at is null
 			and updated_at <= now() - make_interval(secs => $1)
 	`, idle.Seconds())
 	if err != nil {
