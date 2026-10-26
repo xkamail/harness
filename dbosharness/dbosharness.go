@@ -61,6 +61,7 @@ func (o options) stepErr(ctx context.Context, err error) {
 
 // Model wraps m so each Message is one step named "model".
 // Message runs on wctx, not Run's ctx, so build wctx with dbos.From(dctx, rctx).
+// A sub-agent's calls run inline on their own ctx: its parent's tool step checkpoints the reply.
 func Model(wctx dbos.DBOSContext, m harness.Model, opts ...Option) harness.Model {
 	return &stepModel{wctx: wctx, m: m, o: newOptions(opts)}
 }
@@ -88,49 +89,18 @@ type callStep struct {
 	Arguments string `json:"arguments"`
 }
 
-func (m *stepModel) Message(_ context.Context, req harness.Request) (*harness.Response, error) {
-	out, err := dbos.RunAsStep(m.wctx, func(ctx context.Context) (modelStep, error) {
-		// streamed is read only between attempts, after Message returned
-		streamed := false
-		inner := req
-		if req.OnDelta != nil {
-			inner.OnDelta = func(text string) { streamed = true; req.OnDelta(text) }
-		}
-		if req.OnReasoning != nil {
-			inner.OnReasoning = func(text string) { streamed = true; req.OnReasoning(text) }
-		}
-		var (
-			resp *harness.Response
-			err  error
-		)
-		for attempt := 1; ; attempt++ {
-			resp, err = m.m.Message(ctx, inner)
-			if err == nil || attempt >= m.o.attempts || !harness.IsRetryable(err) {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return modelStep{}, ctx.Err()
-			case <-time.After(time.Duration(attempt) * m.o.backoff):
-			}
-			if streamed && req.OnReset != nil {
-				req.OnReset()
-			}
-			streamed = false
-		}
-		if err != nil {
-			m.o.stepErr(ctx, err)
-			return modelStep{}, err
-		}
-		if m.o.onUsage != nil {
-			m.o.onUsage(ctx, m.m, resp.Usage)
-		}
-		st := modelStep{Content: resp.Message.Content, Usage: resp.Usage, Reasoning: resp.Reasoning}
-		for _, c := range resp.Message.ToolCalls {
-			st.Calls = append(st.Calls, callStep{ID: c.ID, Name: c.Name, Arguments: string(c.Arguments)})
-		}
-		return st, nil
-	}, dbos.WithStepName("model"))
+func (m *stepModel) Message(ctx context.Context, req harness.Request) (*harness.Response, error) {
+	run := func(ctx context.Context) (modelStep, error) { return m.call(ctx, req) }
+	sub := harness.IsSubAgent(ctx)
+	var (
+		out modelStep
+		err error
+	)
+	if sub {
+		out, err = run(ctx)
+	} else {
+		out, err = dbos.RunAsStep(m.wctx, run, dbos.WithStepName("model"))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -138,11 +108,54 @@ func (m *stepModel) Message(_ context.Context, req harness.Request) (*harness.Re
 	for _, c := range out.Calls {
 		msg.ToolCalls = append(msg.ToolCalls, harness.ToolCall{ID: c.ID, Name: c.Name, Arguments: json.RawMessage(c.Arguments)})
 	}
-	// a step-limit turn's calls are never dispatched
-	if m.o.onCalls != nil && len(msg.ToolCalls) > 0 && !req.NoToolCalls {
+	// a step-limit turn's calls are never dispatched; a sub-agent's never re-run on replay
+	if m.o.onCalls != nil && len(msg.ToolCalls) > 0 && !req.NoToolCalls && !sub {
 		m.o.onCalls(msg.ToolCalls)
 	}
 	return &harness.Response{Message: msg, Usage: out.Usage, Reasoning: out.Reasoning}, nil
+}
+
+func (m *stepModel) call(ctx context.Context, req harness.Request) (modelStep, error) {
+	// streamed is read only between attempts, after Message returned
+	streamed := false
+	inner := req
+	if req.OnDelta != nil {
+		inner.OnDelta = func(text string) { streamed = true; req.OnDelta(text) }
+	}
+	if req.OnReasoning != nil {
+		inner.OnReasoning = func(text string) { streamed = true; req.OnReasoning(text) }
+	}
+	var (
+		resp *harness.Response
+		err  error
+	)
+	for attempt := 1; ; attempt++ {
+		resp, err = m.m.Message(ctx, inner)
+		if err == nil || attempt >= m.o.attempts || !harness.IsRetryable(err) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return modelStep{}, ctx.Err()
+		case <-time.After(time.Duration(attempt) * m.o.backoff):
+		}
+		if streamed && req.OnReset != nil {
+			req.OnReset()
+		}
+		streamed = false
+	}
+	if err != nil {
+		m.o.stepErr(ctx, err)
+		return modelStep{}, err
+	}
+	if m.o.onUsage != nil {
+		m.o.onUsage(ctx, m.m, resp.Usage)
+	}
+	st := modelStep{Content: resp.Message.Content, Usage: resp.Usage, Reasoning: resp.Reasoning}
+	for _, c := range resp.Message.ToolCalls {
+		st.Calls = append(st.Calls, callStep{ID: c.ID, Name: c.Name, Arguments: string(c.Arguments)})
+	}
+	return st, nil
 }
 
 // Tools runs each call as its own concurrent "tool" step; dbos.Go assigns step
