@@ -21,8 +21,7 @@ type retryable interface {
 // IsRetryable reports whether a model call error is transient (rate limit,
 // 5xx, network); errors not implementing Retryable() are not.
 func IsRetryable(err error) bool {
-	var r retryable
-	if errors.As(err, &r) {
+	if r, ok := errors.AsType[retryable](err); ok {
 		return r.Retryable()
 	}
 	return false
