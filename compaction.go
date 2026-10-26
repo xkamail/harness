@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -65,8 +66,8 @@ const summarySystemPrompt = `You compress the earlier part of a conversation bet
 // message from the end, or 0 when that leaves nothing new.
 func compactionCut(history []Message, keep int) int {
 	cut, n := 0, 0
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == RoleUser {
+	for i, h := range slices.Backward(history) {
+		if h.Role == RoleUser {
 			if n++; n == keep {
 				cut = i
 				break

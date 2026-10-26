@@ -21,9 +21,23 @@ type retryable interface {
 // IsRetryable reports whether a model call error is transient (rate limit,
 // 5xx, network); errors not implementing Retryable() are not.
 func IsRetryable(err error) bool {
-	var r retryable
-	if errors.As(err, &r) {
+	if r, ok := errors.AsType[retryable](err); ok {
 		return r.Retryable()
+	}
+	return false
+}
+
+type contextLength interface {
+	error
+	ContextLength() bool
+}
+
+// IsContextLength reports whether a model call error says the request
+// overflowed the model's context window; errors not implementing
+// ContextLength() are not.
+func IsContextLength(err error) bool {
+	if c, ok := errors.AsType[contextLength](err); ok {
+		return c.ContextLength()
 	}
 	return false
 }
