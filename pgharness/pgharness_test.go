@@ -224,6 +224,15 @@ func TestFinishInterrupted(t *testing.T) {
 	if err := json.Unmarshal(evs[len(evs)-3].Payload, &p); err != nil || p.Text != "half" {
 		t.Fatalf("payload %s %v", evs[len(evs)-3].Payload, err)
 	}
+	// Retry regenerates the reply instead of continuing the partial
+	retry, err := Retry(ctx, nil, c.ID)
+	if err != nil || retry == "" {
+		t.Fatalf("retry %q %v", retry, err)
+	}
+	if l := mustLoad(t, ctx, c.ID, retry); roles(l.History) != "u" {
+		t.Fatalf("retry history %s", roles(l.History))
+	}
+	mustFinish(t, ctx, c.ID, retry, &harness.RunResult{}, errors.New("boom"))
 	next, err := Send(ctx, nil, SendParams{ConversationID: c.ID, Message: "continue"})
 	if err != nil {
 		t.Fatal(err)
