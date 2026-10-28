@@ -381,7 +381,9 @@ _ = pgharness.Follow(ctx, bus, convID, after, cfg, func(ev harness.Event) error 
 Bus implementations: mccloud wraps its Redis `ai:session:<id>` channel;
 verseclash wraps `pkg/realtime` with an `ai_conversation:<id>` topic and maps
 its `Lagged` to `Event.Lagged`. `MemoryBus` ships for tests and single
-instances.
+instances. `pgharness/redisbus` is a ready Redis pub/sub `Bus` (go-redis v9):
+`redisbus.New(rdb, "ai:session:")` publishes JSON events on
+`prefix+conversationID`; a Redis error closes the subscription.
 
 ## Attachments
 
