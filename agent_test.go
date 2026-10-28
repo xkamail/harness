@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -402,5 +403,89 @@ func TestRunApprovedPlan(t *testing.T) {
 	}
 	if ran.Load() != 2 || res.Confirm == nil || res.Confirm.ID != "c3" {
 		t.Fatalf("ran %d confirm %+v", ran.Load(), res.Confirm)
+	}
+}
+
+func afterAnswerAgent(t *testing.T) (*harness.Agent, *atomic.Int32) {
+	t.Helper()
+	var ran atomic.Int32
+	a, err := harness.Compile(harness.Agent{Name: "test", SystemPrompt: "sys", Tools: []harness.Tool{
+		{Name: "lookup", Handler: func(context.Context, json.RawMessage) (any, error) { return "found", nil }},
+		{
+			Name:        "suggest_followups",
+			AfterAnswer: true,
+			Block:       true,
+			EndsTurn:    true,
+			Handler: func(context.Context, json.RawMessage) (any, error) {
+				ran.Add(1)
+				return map[string]any{"ok": true}, nil
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, &ran
+}
+
+func multiCall(content string, calls ...harness.ToolCall) harness.Response {
+	return harness.Response{Message: harness.Message{Role: harness.RoleAssistant, Content: content, ToolCalls: calls}}
+}
+
+func hasTool(req harness.Request, name string) bool {
+	return slices.ContainsFunc(req.Tools, func(d harness.ToolDef) bool { return d.Name == name })
+}
+
+// Ports verseclash's suggest_followups refusal invariant.
+func TestRunAfterAnswerRefused(t *testing.T) {
+	lookup := harness.ToolCall{ID: "l1", Name: "lookup", Arguments: json.RawMessage(`{}`)}
+	followups := harness.ToolCall{ID: "f1", Name: "suggest_followups", Arguments: json.RawMessage(`{}`)}
+	for name, first := range map[string]harness.Response{
+		"with_lookup_in_same_round": multiCall("here", lookup, followups),
+		"before_reply_text":         multiCall("", followups),
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, ran := afterAnswerAgent(t)
+			m := harnesstest.NewFakeModel(first, harnesstest.Text("answer"))
+			res, err := a.Run(context.Background(), m, harness.RunConfig{History: []harness.Message{user("hi")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ran.Load() != 0 || len(res.Blocks) != 0 || res.Stop != harness.StopReply {
+				t.Fatalf("ran %d blocks %+v stop %v", ran.Load(), res.Blocks, res.Stop)
+			}
+			var errs []harness.Message
+			for _, msg := range res.Messages {
+				if msg.Role == harness.RoleTool && strings.Contains(msg.Content, `"error"`) {
+					errs = append(errs, msg)
+				}
+			}
+			if len(errs) != 1 || errs[0].ToolCallID != "f1" || !strings.Contains(errs[0].Content, "without suggest_followups") {
+				t.Fatalf("error messages %+v", errs)
+			}
+			if len(m.Requests) != 2 || !hasTool(m.Requests[0], "suggest_followups") || hasTool(m.Requests[1], "suggest_followups") {
+				t.Fatalf("tool defs not withdrawn after refusal: %+v", m.Requests)
+			}
+		})
+	}
+}
+
+func TestRunAfterAnswerAccepted(t *testing.T) {
+	lookup := harness.ToolCall{ID: "l1", Name: "lookup", Arguments: json.RawMessage(`{}`)}
+	followups := harness.ToolCall{ID: "f1", Name: "suggest_followups", Arguments: json.RawMessage(`{}`)}
+	for name, script := range map[string][]harness.Response{
+		"reply_text_in_same_round":    {multiCall("", lookup), multiCall("answer", followups)},
+		"reply_text_in_earlier_round": {multiCall("answer", lookup), multiCall("", followups)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a, ran := afterAnswerAgent(t)
+			res, err := a.Run(context.Background(), harnesstest.NewFakeModel(script...), harness.RunConfig{History: []harness.Message{user("hi")}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ran.Load() != 1 || len(res.Blocks) != 1 || res.Stop != harness.StopEndsTurn {
+				t.Fatalf("ran %d blocks %+v stop %v", ran.Load(), res.Blocks, res.Stop)
+			}
+		})
 	}
 }

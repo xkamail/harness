@@ -28,6 +28,8 @@ const (
 	resultSkipped  = "skipped: waiting for the user; call again after they reply"
 	resultBlockAck = `{"ok":true,"shown":"the card is shown to the user"}`
 	resultOK       = `{"ok":true}`
+	// %s is the refused tool's name.
+	resultAfterAnswer = "not shown: answer the user now in plain text, without %s, and don't mention this to them"
 )
 
 type registered struct {
@@ -119,9 +121,33 @@ type turn struct {
 	usage    Usage
 }
 
+// afterAnswer is a run's AfterAnswer state; withdrawn holds the tools refused so far.
+type afterAnswer struct {
+	replied   bool
+	withdrawn map[string]bool
+}
+
+// refuses reports whether calls[i] is an AfterAnswer call to refuse, and withdraws it if so.
+func (aa *afterAnswer) refuses(c *compiled, calls []ToolCall, i int) bool {
+	t := c.tools[calls[i].Name]
+	if aa == nil || t == nil || !t.AfterAnswer {
+		return false
+	}
+	lookup := slices.ContainsFunc(calls, func(call ToolCall) bool {
+		o := c.tools[call.Name]
+		return o != nil && !o.Block && !o.AfterAnswer
+	})
+	if aa.replied && !lookup && !aa.withdrawn[t.Name] {
+		return false
+	}
+	aa.withdrawn[t.Name] = true
+	return true
+}
+
 // runTurn answers every call. At most one interaction or held confirmation
 // per turn; later ones are skipped. force runs every call regardless of tier.
-func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall, granted *Grants, force bool, cfg RunConfig) (*turn, error) {
+// aa nil skips the AfterAnswer guard.
+func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall, granted *Grants, force bool, aa *afterAnswer, cfg RunConfig) (*turn, error) {
 	c := a.c
 	t := &turn{outs: make([]string, len(calls)), subCalls: make([][]ToolCall, len(calls))}
 	for _, call := range calls {
@@ -196,6 +222,8 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 	for i, call := range calls {
 		schema, isInteraction := c.interaction[call.Name]
 		switch {
+		case aa.refuses(c, calls, i):
+			answer(i, toolError(fmt.Sprintf(resultAfterAnswer, call.Name)), false)
 		case force:
 			enqueue(i, false)
 		case !isInteraction && a.Tier(call) == TierSafe:
