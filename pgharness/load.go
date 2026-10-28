@@ -47,6 +47,11 @@ func Load(ctx context.Context, conversationID, runID string) (*Loaded, error) {
 	if err != nil {
 		return nil, err
 	}
+	// a run starting on a reply with no calls is a Retry after an
+	// interrupted reply: regenerate it rather than continue or prefill it
+	if n := len(b.msgs); n > 0 && b.msgs[n-1].Role == harness.RoleAssistant && len(b.msgs[n-1].ToolCalls) == 0 {
+		b.msgs = b.msgs[:n-1]
+	}
 	if err := attachParts(ctx, conversationID, b.msgs, defaultAttachmentBudget); err != nil {
 		return nil, err
 	}
