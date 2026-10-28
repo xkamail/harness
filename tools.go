@@ -60,6 +60,10 @@ type Tool struct {
 	EndsTurn bool
 	// Block: the result is a UI card; the model gets a short acknowledgement instead.
 	Block bool
+	// AfterAnswer: runs only once the run has reply text and the same round calls no lookup
+	// (a tool neither Block nor AfterAnswer); otherwise refused with a tool error and withdrawn
+	// for the rest of the run, since models retry it every round.
+	AfterAnswer bool
 
 	// Empty shows Name.
 	Label string

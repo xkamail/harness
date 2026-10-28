@@ -327,6 +327,7 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 		}
 	}
 
+	aa := &afterAnswer{withdrawn: make(map[string]bool)}
 	maxIter := a.MaxIterations
 	if maxIter == 0 {
 		maxIter = defaultMaxIterations
@@ -345,6 +346,9 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 		id := MessageID(runID, res.Iterations+1)
 		overBudget := cfg.Budget.spent(res.Usage)
 		req := Request{Messages: msgs, Tools: a.c.defs, ReasoningEffort: a.ReasoningEffort}
+		if len(aa.withdrawn) > 0 {
+			req.Tools = slices.DeleteFunc(slices.Clone(a.c.defs), func(d ToolDef) bool { return aa.withdrawn[d.Name] })
+		}
 		if cfg.OnDelta != nil {
 			req.OnDelta = func(text string) { cfg.OnDelta(id, text) }
 		}
@@ -390,7 +394,8 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 			return res, ErrMaxIterations
 		}
 		// Record the assistant turn only with its tool results, so Messages never holds unanswered calls but the held one.
-		t, err := a.runTurn(ctx, id, msg.ToolCalls, &granted, false, cfg)
+		aa.replied = aa.replied || strings.TrimSpace(msg.Content) != ""
+		t, err := a.runTurn(ctx, id, msg.ToolCalls, &granted, false, aa, cfg)
 		if err != nil {
 			return res, err
 		}
@@ -463,7 +468,7 @@ func (a *Agent) decide(ctx context.Context, msgs []Message, cfg RunConfig) (*tur
 		b, _ := json.Marshal(out)
 		return &turn{}, &Message{Role: RoleTool, Content: string(b), ToolCallID: call.ID}, nil
 	}
-	t, err := a.runTurn(ctx, turnID, []ToolCall{*call}, nil, true, cfg)
+	t, err := a.runTurn(ctx, turnID, []ToolCall{*call}, nil, true, nil, cfg)
 	if err != nil {
 		return nil, nil, err
 	}
