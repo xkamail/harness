@@ -226,12 +226,19 @@ func TestRunBlockEndsTurn(t *testing.T) {
 		Handler:  func(context.Context, json.RawMessage) (any, error) { return []string{"a", "b"}, nil },
 	})
 	m := harnesstest.NewFakeModel(harnesstest.Call("c1", "offer_choices", struct{}{}))
-	res, err := a.Run(context.Background(), m, harness.RunConfig{History: []harness.Message{user("go")}})
+	var streamed []harness.Block
+	res, err := a.Run(context.Background(), m, harness.RunConfig{
+		History: []harness.Message{user("go")},
+		OnBlock: func(_ string, b harness.Block) { streamed = append(streamed, b) },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Stop != harness.StopEndsTurn || len(res.Blocks) != 1 || string(res.Blocks[0].Data) != `["a","b"]` {
 		t.Fatalf("got %+v", res)
+	}
+	if len(streamed) != 1 || streamed[0].ToolCallID != "c1" || streamed[0].Tool != "offer_choices" || string(streamed[0].Data) != `["a","b"]` {
+		t.Fatalf("streamed %+v", streamed)
 	}
 	if strings.Contains(res.Messages[1].Content, `"a"`) {
 		t.Fatalf("the model saw the card: %q", res.Messages[1].Content)
@@ -247,9 +254,16 @@ func TestRunEndsTurnWithLookup(t *testing.T) {
 		}}},
 		harnesstest.Text("done"),
 	)
-	res, err := a.Run(context.Background(), m, harness.RunConfig{History: []harness.Message{user("go")}})
+	var streamed []string
+	res, err := a.Run(context.Background(), m, harness.RunConfig{
+		History: []harness.Message{user("go")},
+		OnBlock: func(_ string, b harness.Block) { streamed = append(streamed, b.ToolCallID) },
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Equal(streamed, []string{"c1"}) {
+		t.Fatalf("only the Block tool streams a card, got %v", streamed)
 	}
 	// A round that also looked data up must not end the turn: the model has to see the results.
 	if len(m.Requests) != 2 || res.Reply != "done" || res.Stop == harness.StopEndsTurn || len(res.Blocks) != 1 {

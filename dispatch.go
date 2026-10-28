@@ -305,7 +305,11 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 			continue
 		}
 		if tool.Block {
-			t.blocks = append(t.blocks, Block{ToolCallID: calls[i].ID, Tool: tool.Name, Data: json.RawMessage(outs[i].Out)})
+			b := Block{ToolCallID: calls[i].ID, Tool: tool.Name, Data: json.RawMessage(outs[i].Out)}
+			t.blocks = append(t.blocks, b)
+			if cfg.OnBlock != nil {
+				cfg.OnBlock(messageID, b)
+			}
 			t.outs[i] = resultBlockAck
 		}
 		ends = ends || tool.EndsTurn

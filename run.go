@@ -28,7 +28,10 @@ type RunConfig struct {
 	// OnToolDone may be called concurrently.
 	OnToolStart func(messageID string, call ToolCall, d ToolDisplay)
 	OnToolDone  func(call ToolCall, out ToolOutcome)
-	Budget      Budget
+	// OnBlock streams a Block tool's card as it is built; like OnToolStart it is
+	// called again for replayed turns. RunResult.Blocks still carries every card.
+	OnBlock func(messageID string, b Block)
+	Budget  Budget
 }
 
 // Budget bounds one run. Zero fields are unlimited.
