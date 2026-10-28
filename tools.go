@@ -55,7 +55,8 @@ type Tool struct {
 	// Shared by every caller; set it only on caller-independent read tools.
 	CacheTTL time.Duration
 
-	// EndsTurn: no further model call after this tool runs.
+	// EndsTurn: no further model call after this tool runs, unless the same
+	// round also called a non-Block tool whose result the model must see.
 	EndsTurn bool
 	// Block: the result is a UI card; the model gets a short acknowledgement instead.
 	Block bool
