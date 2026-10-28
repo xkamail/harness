@@ -39,7 +39,8 @@ func Call(id, name string, args any) harness.Response {
 	}}
 }
 
-func (f *FakeModel) Message(_ context.Context, req harness.Request) (*harness.Response, error) {
+// Message fails with ctx's error if ctx is done once its text has streamed.
+func (f *FakeModel) Message(ctx context.Context, req harness.Request) (*harness.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Requests = append(f.Requests, req)
@@ -50,6 +51,9 @@ func (f *FakeModel) Message(_ context.Context, req harness.Request) (*harness.Re
 	f.script = f.script[1:]
 	if req.OnDelta != nil && r.Message.Content != "" {
 		req.OnDelta(r.Message.Content)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	return &r, nil
 }

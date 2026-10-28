@@ -274,6 +274,7 @@ func MustCompile(a Agent) *Agent {
 
 // Run loops until a text reply, interaction tool, held call, EndsTurn tool or limit. On error
 // the result is still non-nil with usage and messages so far. A held call gets no tool message.
+// A model call cut off by ctx ends Messages with its streamed text, without tool calls.
 func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, error) {
 	if a == nil || a.c == nil {
 		return &RunResult{}, ErrNotCompiled
@@ -349,14 +350,22 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 		if len(aa.withdrawn) > 0 {
 			req.Tools = slices.DeleteFunc(slices.Clone(a.c.defs), func(d ToolDef) bool { return aa.withdrawn[d.Name] })
 		}
-		if cfg.OnDelta != nil {
-			req.OnDelta = func(text string) { cfg.OnDelta(id, text) }
+		// streamed text is kept if the call is interrupted
+		var partial strings.Builder
+		req.OnDelta = func(text string) {
+			partial.WriteString(text)
+			if cfg.OnDelta != nil {
+				cfg.OnDelta(id, text)
+			}
 		}
 		if cfg.OnReasoning != nil {
 			req.OnReasoning = func(text string) { cfg.OnReasoning(id, text) }
 		}
-		if cfg.OnReset != nil {
-			req.OnReset = func() { cfg.OnReset(id) }
+		req.OnReset = func() {
+			partial.Reset()
+			if cfg.OnReset != nil {
+				cfg.OnReset(id)
+			}
 		}
 		if overBudget || res.Iterations == maxIter-1 {
 			// the last call ends the run with what was found instead of an error
@@ -365,6 +374,9 @@ func (a *Agent) Run(ctx context.Context, m Model, cfg RunConfig) (*RunResult, er
 		}
 		resp, err := m.Message(ctx, req)
 		if err != nil {
+			if ctx.Err() != nil && strings.TrimSpace(partial.String()) != "" {
+				add(Message{ID: id, Role: RoleAssistant, Content: partial.String()})
+			}
 			return res, fmt.Errorf("harness: model call: %w", err)
 		}
 		res.Iterations++

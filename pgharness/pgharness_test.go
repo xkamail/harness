@@ -207,6 +207,32 @@ func TestFinishError(t *testing.T) {
 	}
 }
 
+func TestFinishInterrupted(t *testing.T) {
+	ctx := setup(t)
+	c, run := mustStart(t, ctx, nil, StartParams{Message: "hi"})
+	res := &harness.RunResult{Model: "fake", Messages: []harness.Message{{ID: run + ".1", Role: harness.RoleAssistant, Content: "half"}}}
+	mustFinish(t, ctx, c.ID, run, res, fmt.Errorf("harness: model call: %w", context.Canceled))
+	got := eventTypes(t, ctx, c.ID, 0)
+	if s := fmt.Sprint(got); !strings.HasSuffix(s, "agent.message agent.error session.status]") {
+		t.Fatalf("events %s", s)
+	}
+	evs, err := Events(ctx, c.ID, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var p harness.MessagePayload
+	if err := json.Unmarshal(evs[len(evs)-3].Payload, &p); err != nil || p.Text != "half" {
+		t.Fatalf("payload %s %v", evs[len(evs)-3].Payload, err)
+	}
+	next, err := Send(ctx, nil, SendParams{ConversationID: c.ID, Message: "continue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := mustLoad(t, ctx, c.ID, next); roles(l.History) != "uau" {
+		t.Fatalf("history %s", roles(l.History))
+	}
+}
+
 func TestRetry(t *testing.T) {
 	ctx := setup(t)
 	c, run := mustStart(t, ctx, nil, StartParams{Message: "hi"})

@@ -86,6 +86,7 @@ type RunResult struct {
 	ConfirmPreview json.RawMessage
 	Blocks         []Block
 	// Messages appended during this run; the caller persists them as events.
+	// An interrupted run ends them with the cut-off call's streamed text.
 	Messages []Message
 }
 
