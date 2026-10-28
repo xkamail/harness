@@ -766,7 +766,7 @@ func TestList(t *testing.T) {
 		t.Fatal(err)
 	}
 	ids := func(limit int) []string {
-		got, err := List(ctx, "u1", "test", limit)
+		got, err := List(ctx, "u1", "test", nil, limit)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -782,9 +782,26 @@ func TestList(t *testing.T) {
 	if got := ids(2); !slices.Equal(got, []string{c.ID, b.ID}) {
 		t.Fatalf("limit 2: %v", got)
 	}
-	got, err := List(ctx, "nobody", "test", 10)
+	got, err := List(ctx, "nobody", "test", nil, 10)
 	if err != nil || got == nil || len(got) != 0 {
 		t.Fatalf("empty: %v %v", got, err)
+	}
+}
+
+func TestListValues(t *testing.T) {
+	ctx := setup(t)
+	t1 := harness.Values{"tournamentId": "t1"}
+	mustStart(t, ctx, nil, StartParams{Context: t1, Message: "old"})
+	newest, _ := mustStart(t, ctx, nil, StartParams{Context: t1, Message: "new"})
+	// t2 is the newest overall, so an unfiltered limit 1 would return it
+	mustStart(t, ctx, nil, StartParams{Context: harness.Values{"tournamentId": "t2"}, Message: "other"})
+	got, err := List(ctx, "u1", "test", t1, 1)
+	if err != nil || len(got) != 1 || got[0].ID != newest.ID {
+		t.Fatalf("latest t1: %v %v, want %s", got, err, newest.ID)
+	}
+	got, err = List(ctx, "u1", "test", harness.Values{"tournamentId": "nope"}, 10)
+	if err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("no match: %v %v", got, err)
 	}
 }
 

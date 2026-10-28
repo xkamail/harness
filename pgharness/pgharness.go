@@ -95,8 +95,12 @@ func Get(ctx context.Context, id string) (*Conversation, error) {
 	return getConversation(ctx, id, false)
 }
 
-// List returns an owner's conversations with agent, most recently updated first, skipping deleted ones.
-func List(ctx context.Context, ownerID, agent string, limit int) ([]Conversation, error) {
+// List returns an owner's conversations with agent whose context contains values (nil for all),
+// most recently updated first, skipping deleted ones.
+func List(ctx context.Context, ownerID, agent string, values harness.Values, limit int) ([]Conversation, error) {
+	if values == nil {
+		values = harness.Values{} // nil marshals to null, which no object contains
+	}
 	out := make([]Conversation, 0)
 	err := pgctx.Iter(ctx, func(scan pgsql.Scanner) error {
 		var c Conversation
@@ -110,10 +114,11 @@ func List(ctx context.Context, ownerID, agent string, limit int) ([]Conversation
 		from harness.conversations
 		where owner_id = $1
 			and agent = $2
+			and context @> $3
 			and deleted_at is null
 		order by updated_at desc
-		limit $3
-	`, ownerID, agent, limit)
+		limit $4
+	`, ownerID, agent, pgsql.JSON(values), limit)
 	return out, err
 }
 
