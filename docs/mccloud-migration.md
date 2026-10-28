@@ -129,7 +129,7 @@ Same names, still check they behave the same: `Tool` (harness adds `EndsTurn`,
 | `Start` / `Send` / `Stop` | `Start` / `Send` / `Stop` (then kick the returned run id as a DBOS workflow) |
 | `Retry` | `Retry` |
 | `Unqueue` | `Unqueue(ctx, bus, convID, queuedSeq)` (records `user.unqueued`) |
-| `List` | `List(ctx, ownerID, agent, limit)` |
+| `List` | `List(ctx, ownerID, agent, nil, limit)` |
 | `Delete` (soft) | `Delete` (soft; `DeleteContext` purges) |
 | LLM title (`api/ai/title.go`) | keep generating it in mccloud, store it with `SetTitle` |
 | `Events` / SSE stream | `Events` + `Follow` over a `Bus` (Redis) |

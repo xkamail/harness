@@ -123,6 +123,7 @@ three jobs, all by plain jsonb operators:
 | --- | --- |
 | Find the conversation to resume (`PerContext`) | `agent = $1 and owner_id = $2 and context = $3` |
 | Delete a subject and everything under it | `context @> $1` (deleting `{"tournamentId": x}` takes its matches) |
+| List an owner's conversations about a subject | `context @> $3` (`List` with `{"tournamentId": x}`) |
 | Memories visible to a conversation | `$conversation_context @> memory.context` (`{}` is owner-wide) |
 
 `Load` puts the context in the run's `ctx` (`harness.WithValues`) so tools
@@ -139,7 +140,7 @@ func Stop(ctx context.Context, bus Bus, conversationID string) (runID string, er
 func Retry(ctx context.Context, bus Bus, conversationID string) (runID string, err error) // re-run after error, or ""
 func Unqueue(ctx context.Context, bus Bus, conversationID string, queuedSeq int64) error // drop a pending user.queued
 func Get(ctx context.Context, id string) (*Conversation, error)
-func List(ctx context.Context, ownerID, agent string, limit int) ([]Conversation, error) // newest updated_at first; skips deleted
+func List(ctx context.Context, ownerID, agent string, values harness.Values, limit int) ([]Conversation, error) // context @> values (nil for all); newest updated_at first; skips deleted
 func SetTitle(ctx context.Context, conversationID, title string) error // e.g. an LLM-generated title
 func Delete(ctx context.Context, conversationID string) error                          // soft delete; reads as ErrNotFound after
 func Append(ctx context.Context, bus Bus, conversationID string, evs ...harness.Event) ([]harness.Event, error) // app-defined persisted events; Load skips them
