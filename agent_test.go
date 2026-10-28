@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/xkamail/harness"
 	"github.com/xkamail/harness/harnesstest"
@@ -528,5 +529,93 @@ func TestRunAfterAnswerAccepted(t *testing.T) {
 				t.Fatalf("ran %d blocks %+v stop %v", ran.Load(), res.Blocks, res.Stop)
 			}
 		})
+	}
+}
+
+type streamModel func(ctx context.Context, req harness.Request) (*harness.Response, error)
+
+func (f streamModel) Message(ctx context.Context, req harness.Request) (*harness.Response, error) {
+	return f(ctx, req)
+}
+
+func (streamModel) Provider() string { return "fake" }
+func (streamModel) Model() string    { return "fake" }
+
+func TestRunInterruptedKeepsPartial(t *testing.T) {
+	a, _ := testAgent(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := harnesstest.NewFakeModel(harnesstest.Text("half an ans"))
+	res, err := a.Run(ctx, m, harness.RunConfig{
+		RunID:   "run",
+		History: []harness.Message{user("go")},
+		OnDelta: func(string, string) { cancel() },
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	if len(res.Messages) != 1 {
+		t.Fatalf("messages %+v", res.Messages)
+	}
+	if m0 := res.Messages[0]; m0.Role != harness.RoleAssistant || m0.Content != "half an ans" || len(m0.ToolCalls) != 0 || m0.ID != harness.MessageID("run", 1) {
+		t.Fatalf("message %+v", m0)
+	}
+}
+
+func TestRunInterruptedResetDropsStale(t *testing.T) {
+	a, _ := testAgent(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := streamModel(func(ctx context.Context, req harness.Request) (*harness.Response, error) {
+		req.OnDelta("stale")
+		req.OnReset()
+		req.OnDelta("fresh")
+		cancel()
+		return nil, ctx.Err()
+	})
+	res, err := a.Run(ctx, m, harness.RunConfig{RunID: "run", History: []harness.Message{user("go")}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	if len(res.Messages) != 1 || res.Messages[0].Content != "fresh" {
+		t.Fatalf("messages %+v", res.Messages)
+	}
+}
+
+func TestRunTimeoutKeepsPartial(t *testing.T) {
+	a, err := harness.Compile(harness.Agent{Name: "test", SystemPrompt: "sys", Timeout: 20 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := streamModel(func(ctx context.Context, req harness.Request) (*harness.Response, error) {
+		req.OnDelta("partial")
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	res, err := a.Run(context.Background(), m, harness.RunConfig{RunID: "run", History: []harness.Message{user("go")}})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err %v", err)
+	}
+	if len(res.Messages) == 0 {
+		t.Fatal("no messages")
+	}
+	last := res.Messages[len(res.Messages)-1]
+	if last.Role != harness.RoleAssistant || last.Content != "partial" || len(last.ToolCalls) != 0 {
+		t.Fatalf("last %+v", last)
+	}
+}
+
+func TestRunModelErrorDropsPartial(t *testing.T) {
+	a, _ := testAgent(t)
+	m := streamModel(func(_ context.Context, req harness.Request) (*harness.Response, error) {
+		req.OnDelta("partial")
+		return nil, errors.New("boom")
+	})
+	res, err := a.Run(context.Background(), m, harness.RunConfig{RunID: "run", History: []harness.Message{user("go")}})
+	if err == nil || errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	if len(res.Messages) != 0 {
+		t.Fatalf("messages %+v", res.Messages)
 	}
 }

@@ -19,7 +19,7 @@ type Request struct {
 	NoToolCalls bool
 	// MaxOutputTokens: zero keeps the provider's limit.
 	MaxOutputTokens int64
-	// Stream callbacks; each may be nil.
+	// Stream callbacks; each may be nil. None may be called after Message returns.
 	OnDelta     func(text string)
 	OnReasoning func(text string)
 	// OnReset is called before a retry re-sends a call whose text already

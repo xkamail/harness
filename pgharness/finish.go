@@ -37,7 +37,7 @@ func Finish(ctx context.Context, bus Bus, a *harness.Agent, conversationID, runI
 			return nil
 		}
 
-		// kept even on failure: messages are complete call/result pairs and the spend is real
+		// kept even on failure: messages are complete call/result pairs or an interrupted reply, and the spend is real
 		var evs []harness.Event
 		names := map[string]string{}
 		for _, m := range res.Messages {
