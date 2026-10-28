@@ -236,6 +236,47 @@ func TestRunBlockEndsTurn(t *testing.T) {
 	}
 }
 
+func TestRunEndsTurnWithLookup(t *testing.T) {
+	a, _ := testAgent(t, offerChoices)
+	m := harnesstest.NewFakeModel(
+		harness.Response{Message: harness.Message{Role: harness.RoleAssistant, ToolCalls: []harness.ToolCall{
+			{ID: "c1", Name: "offer_choices", Arguments: json.RawMessage(`{}`)},
+			{ID: "c2", Name: "echo", Arguments: json.RawMessage(`{"s":"x"}`)},
+		}}},
+		harnesstest.Text("done"),
+	)
+	res, err := a.Run(context.Background(), m, harness.RunConfig{History: []harness.Message{user("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A round that also looked data up must not end the turn: the model has to see the results.
+	if len(m.Requests) != 2 || res.Reply != "done" || res.Stop == harness.StopEndsTurn || len(res.Blocks) != 1 {
+		t.Fatalf("got %+v requests=%d", res, len(m.Requests))
+	}
+}
+
+func TestRunEndsTurnOnlyBlocks(t *testing.T) {
+	a, _ := testAgent(t, offerChoices)
+	m := harnesstest.NewFakeModel(harness.Response{Message: harness.Message{Role: harness.RoleAssistant, ToolCalls: []harness.ToolCall{
+		{ID: "c1", Name: "offer_choices", Arguments: json.RawMessage(`{}`)},
+		{ID: "c2", Name: "offer_choices", Arguments: json.RawMessage(`{}`)},
+	}}})
+	res, err := a.Run(context.Background(), m, harness.RunConfig{History: []harness.Message{user("go")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stop != harness.StopEndsTurn || len(m.Requests) != 1 || len(res.Blocks) != 2 {
+		t.Fatalf("got %+v requests=%d", res, len(m.Requests))
+	}
+}
+
+var offerChoices = harness.Tool{
+	Name:     "offer_choices",
+	Block:    true,
+	EndsTurn: true,
+	Handler:  func(context.Context, json.RawMessage) (any, error) { return []string{"a", "b"}, nil },
+}
+
 func TestRunStepLimit(t *testing.T) {
 	a, err := harness.Compile(harness.Agent{
 		Name:          "t",

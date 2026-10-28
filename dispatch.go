@@ -265,6 +265,12 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 			hold(i, o.Preview)
 		}
 	}
+	ends, lookups := false, false
+	for _, call := range calls {
+		if tool, ok := c.tools[call.Name]; !ok || !tool.Block {
+			lookups = true
+		}
+	}
 	for _, i := range idx {
 		tool, ok := c.tools[calls[i].Name]
 		if !ok || !outs[i].OK || outs[i].Checked {
@@ -274,8 +280,10 @@ func (a *Agent) runTurn(ctx context.Context, messageID string, calls []ToolCall,
 			t.blocks = append(t.blocks, Block{ToolCallID: calls[i].ID, Tool: tool.Name, Data: json.RawMessage(outs[i].Out)})
 			t.outs[i] = resultBlockAck
 		}
-		t.endsTurn = t.endsTurn || tool.EndsTurn
+		ends = ends || tool.EndsTurn
 	}
+	// the model has not seen this round's non-card results yet
+	t.endsTurn = ends && !lookups
 	return t, nil
 }
 
