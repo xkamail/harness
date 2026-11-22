@@ -62,12 +62,12 @@ func (o options) stepErr(ctx context.Context, err error) {
 // Model wraps m so each Message is one step named "model".
 // Message runs on wctx, not Run's ctx, so build wctx with dbos.From(dctx, rctx).
 // A sub-agent's calls run inline on their own ctx: its parent's tool step checkpoints the reply.
-func Model(wctx dbos.DBOSContext, m harness.Model, opts ...Option) harness.Model {
+func Model(wctx dbos.Context, m harness.Model, opts ...Option) harness.Model {
 	return &stepModel{wctx: wctx, m: m, o: newOptions(opts)}
 }
 
 type stepModel struct {
-	wctx dbos.DBOSContext
+	wctx dbos.Context
 	m    harness.Model
 	o    options
 }
@@ -160,10 +160,10 @@ func (m *stepModel) call(ctx context.Context, req harness.Request) (modelStep, e
 
 // Tools runs each call as its own concurrent "tool" step; dbos.Go assigns step
 // ids in call order, so replay matches each call to its result.
-func Tools(wctx dbos.DBOSContext, opts ...Option) harness.ToolRunner {
+func Tools(wctx dbos.Context, opts ...Option) harness.ToolRunner {
 	o := newOptions(opts)
 	return func(_ context.Context, fns []func(context.Context) (string, error)) ([]string, error) {
-		chs := make([]chan dbos.StepOutcome[string], len(fns))
+		chs := make([]<-chan dbos.StepOutcome[string], len(fns))
 		errs := make([]error, len(fns))
 		for i, fn := range fns {
 			chs[i], errs[i] = dbos.Go(wctx, func(ctx context.Context) (string, error) {
@@ -192,7 +192,7 @@ type inboxStep struct {
 }
 
 // Inbox wraps read as a step so replay injects exactly the original messages.
-func Inbox(wctx dbos.DBOSContext, read harness.Inbox) harness.Inbox {
+func Inbox(wctx dbos.Context, read harness.Inbox) harness.Inbox {
 	return func(context.Context) ([]harness.Message, bool, error) {
 		out, err := dbos.RunAsStep(wctx, func(ctx context.Context) (inboxStep, error) {
 			msgs, revoke, err := read(ctx)
@@ -202,7 +202,7 @@ func Inbox(wctx dbos.DBOSContext, read harness.Inbox) harness.Inbox {
 	}
 }
 
-func Context(wctx dbos.DBOSContext, fn func(ctx context.Context) (string, error)) func(ctx context.Context) (string, error) {
+func Context(wctx dbos.Context, fn func(ctx context.Context) (string, error)) func(ctx context.Context) (string, error) {
 	return func(context.Context) (string, error) {
 		return dbos.RunAsStep(wctx, func(ctx context.Context) (string, error) {
 			return fn(ctx)
@@ -219,16 +219,16 @@ type OrphanSweeper interface {
 
 // FailOrphanedRuns fails runs whose workflow is unknown, ended, or pending under another build.
 // Call it after dbos.Launch with idle 0, then periodically.
-func FailOrphanedRuns(ctx context.Context, dc dbos.DBOSContext, s OrphanSweeper, idle time.Duration) error {
+func FailOrphanedRuns(ctx context.Context, dc dbos.Context, s OrphanSweeper, idle time.Duration) error {
 	convs, runs, err := s.RunningIdle(ctx, idle)
 	if err != nil || len(runs) == 0 {
 		return err
 	}
 	live, err := dbos.ListWorkflows(dc,
-		dbos.WithWorkflowIDs(runs),
-		dbos.WithStatus([]dbos.WorkflowStatusType{dbos.WorkflowStatusPending, dbos.WorkflowStatusEnqueued}),
-		dbos.WithLoadInput(false),
-		dbos.WithLoadOutput(false),
+		dbos.WithFilterWorkflowIDs(runs...),
+		dbos.WithFilterStatus(dbos.WorkflowStatusPending, dbos.WorkflowStatusEnqueued),
+		dbos.WithFilterLoadInput(false),
+		dbos.WithFilterLoadOutput(false),
 	)
 	if err != nil {
 		return err
